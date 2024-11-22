@@ -68,5 +68,5 @@
 + 线程私有变量，默认在32B-2KB的内存申请与释放首先都会放入tcache中，所以能加快分配性能，但也可能增加内存碎片和 "false sharing" 的风险。
 
 # 5、SINGLE_THREAD_P
-+ 使用编译器选项-DSINGLE_THREAD_P=1，则只有main arean，申请或释放内存时不会加锁。如下图所示：  
++ 单线程只有main arean，申请或释放内存时不会加锁。如下图所示：  
   ![single_thread_malloc](../ptmalloc/single_thread_malloc.jpg)
