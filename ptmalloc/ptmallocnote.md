@@ -12,22 +12,23 @@
 
 # 2、malloc
 + 2.1、malloc步骤文字介绍：  
-  + 2.1.1、获取分配区的锁，为了防止多个线程同时访问同一个分配区，在进行分配之前需要取得分配区域的锁。线程先查看线程私有实例中是否已经存在一个分配区，如果存在尝试对该分配区加锁，如果加锁成功，使用该分配区分配内存，否则，该线程搜索分配区循环链表试图获得一个空闲（没有加锁）的分配区。如果所有的分配区都已经加锁，那么 ptmalloc 会开辟一个新的分配区，把该分配区加入到全局分配区循环链表和线程的私有实例中并加锁，然后使用该分配区进行分配操作。开辟出来的新分配区一定为非主分配区，因为主分配区是从父进程那里继承来的。开辟非主分配区时会调用 mmap()创建一个sub-heap，并设置好 top chunk。  
-  + 2.1.2、将用户的请求大小转换为实际需要分配的 chunk 空间大小。  
-  + 2.1.3、判断所需分配chunk的大小是否满足chunk_size <= max_fast (max_fast 64位为128B，32位为64B)，如果是的话，则转下一步，否则跳到第 2.1.5 步。  
-  + 2.1.4、首先尝试在 fast bins 中取一个所需大小的 chunk 分配给用户。如果可以找到，则分配结束。否则转到下一步。  
-  + 2.1.5、判断所需大小是否处在 small bins 中，即判断 chunk_size < (64位为1024B，32位为512B) 是否成立。如果chunk 大小处在 small bins 中，则转下一步，否则转到第 2.1.6 步。  
-  + 2.1.6、根据所需分配的 chunk 的大小，找到具体所在的某个 small bin，从该 bin 的尾部摘取一个恰好满足大小的 chunk。若成功，则分配结束，否则，转到下一步。  
-  + 2.1.7、到了这一步，说明需要分配的是一块大的内存，或者 small bins 中找不到合适的chunk。于是，ptmalloc 首先会遍历 fast bins 中的 chunk，将相邻的 chunk 进行合并，并链接到 unsorted bin 中，然后遍历 unsorted bin 中的 chunk，如果 unsorted bin 只有一个 chunk，并且这个 chunk 在上次分配时被使用过，并且所需分配的 chunk 大小属于 small bins，并且 chunk 的大小大于等于需要分配的大小，这种情况下就直接将该 chunk 进行切割，分配结束，否则将根据 chunk 的空间大小将其放入 small bins 或是 large bins 中，遍历完成后，转入下一步。  
-  + 2.1.8、到了这一步，说明需要分配的是一块大的内存，或者 small bins 和 unsorted bin 中都找不到合适的 chunk，并且 fast bins 和 unsorted bin 中所有的 chunk 都清除干净了。从 large bins 中按照“smallest-first，best-fit”原则，找一个合适的 chunk，从中划分一块所需大小的 chunk，并将剩下的部分链接回到 bins 中。若操作成功，则分配结束，否则转到下一步。  
-  + 2.1.9、如果搜索 fast bins 和 bins 都没有找到合适的 chunk，那么就需要操作 top chunk 来进行分配了。判断 top chunk 大小是否满足所需 chunk 的大小，如果是，则从 top chunk 中分出一块来。否则转到下一步。  
-  + 2.1.10、到了这一步，说明 top chunk 也不能满足分配要求，所以，于是就有了两个选择: 如果是主分配区，调用 sbrk()，增加 top chunk 大小；如果是非主分配区，调用 mmap来分配一个新的 sub-heap，增加 top chunk 大小；或者使用 mmap()来直接分配。在这里，需要依靠 chunk 的大小来决定到底使用哪种方法。判断所需分配的 chunk大小是否大于等于 mmap 分配阈值，如果是的话，则转下一步，调用 mmap 分配，否则跳到第 2.1.12 步，增加 top chunk 的大小。  
-  + 2.1.11、使用 mmap 系统调用为程序的内存空间映射一块 chunk_size align 4kB 大小的空间。然后将内存指针返回给用户。  
-  + 2.1.12、判断是否为第一次调用 malloc，若是主分配区，则需要进行一次初始化工作，分配一块大小为(chunk_size + 128KB) align 4KB 大小的空间作为初始的 heap。若已经初始化过了，主分配区则调用 sbrk()增加 heap 空间，分主分配区则在 top chunk 中切割出一个 chunk，使之满足分配需求，并将内存指针返回给用户。
+  + 2.1.1、tcache默认开启，若大小为32B-2KB，如果tcache列表中有则直接取出返回。
+  + 2.1.2、获取分配区的锁，为了防止多个线程同时访问同一个分配区，在进行分配之前需要取得分配区域的锁。线程先查看线程私有实例中是否已经存在一个分配区，如果存在尝试对该分配区加锁，如果加锁成功，使用该分配区分配内存，否则，该线程搜索分配区循环链表试图获得一个空闲（没有加锁）的分配区。如果所有的分配区都已经加锁，那么 ptmalloc 会开辟一个新的分配区，把该分配区加入到全局分配区循环链表和线程的私有实例中并加锁，然后使用该分配区进行分配操作。开辟出来的新分配区一定为非主分配区，因为主分配区是从父进程那里继承来的。开辟非主分配区时会调用 mmap()创建一个sub-heap，并设置好 top chunk。  
+  + 2.1.3、将用户的请求大小转换为实际需要分配的 chunk 空间大小。  
+  + 2.1.4、判断所需分配chunk的大小是否满足chunk_size <= max_fast (max_fast 64位为128B，32位为64B)，如果是的话，则转下一步，否则跳到第 2.1.6 步。  
+  + 2.1.5、首先尝试在 fast bins 中取一个所需大小的 chunk 分配给用户。如果可以找到，则分配结束。否则转到下一步。  
+  + 2.1.6、判断所需大小是否处在 small bins 中，即判断 chunk_size < (64位为1024B，32位为512B) 是否成立。如果chunk 大小处在 small bins 中，则转下一步，否则转到第 2.1.7 步。  
+  + 2.1.7、根据所需分配的 chunk 的大小，找到具体所在的某个 small bin，从该 bin 的尾部摘取一个恰好满足大小的 chunk。若成功，则分配结束，否则，转到下一步。  
+  + 2.1.8、到了这一步，说明需要分配的是一块大的内存，或者 small bins 中找不到合适的chunk。于是，ptmalloc 首先会遍历 fast bins 中的 chunk，将相邻的 chunk 进行合并，并链接到 unsorted bin 中，然后遍历 unsorted bin 中的 chunk，如果 unsorted bin 只有一个 chunk，并且这个 chunk 在上次分配时被使用过，并且所需分配的 chunk 大小属于 small bins，并且 chunk 的大小大于等于需要分配的大小，这种情况下就直接将该 chunk 进行切割，分配结束，否则将根据 chunk 的空间大小将其放入 small bins 或是 large bins 中，遍历完成后，转入下一步。  
+  + 2.1.9、到了这一步，说明需要分配的是一块大的内存，或者 small bins 和 unsorted bin 中都找不到合适的 chunk，并且 fast bins 和 unsorted bin 中所有的 chunk 都清除干净了。从 large bins 中按照“smallest-first，best-fit”原则，找一个合适的 chunk，从中划分一块所需大小的 chunk，并将剩下的部分链接回到 bins 中。若操作成功，则分配结束，否则转到下一步。  
+  + 2.1.10、如果搜索 fast bins 和 bins 都没有找到合适的 chunk，那么就需要操作 top chunk 来进行分配了。判断 top chunk 大小是否满足所需 chunk 的大小，如果是，则从 top chunk 中分出一块来。否则转到下一步。  
+  + 2.1.11、到了这一步，说明 top chunk 也不能满足分配要求，所以，于是就有了两个选择: 如果是主分配区，调用 sbrk()，增加 top chunk 大小；如果是非主分配区，调用 mmap来分配一个新的 sub-heap，增加 top chunk 大小；或者使用 mmap()来直接分配。在这里，需要依靠 chunk 的大小来决定到底使用哪种方法。判断所需分配的 chunk大小是否大于等于 mmap 分配阈值，如果是的话，则转下一步，调用 mmap 分配，否则跳到第 2.1.13 步，增加 top chunk 的大小。  
+  + 2.1.12、使用 mmap 系统调用为程序的内存空间映射一块 chunk_size align 4kB 大小的空间。然后将内存指针返回给用户。  
+  + 2.1.13、判断是否为第一次调用 malloc，若是主分配区，则需要进行一次初始化工作，分配一块大小为(chunk_size + 128KB) align 4KB 大小的空间作为初始的 heap。若已经初始化过了，主分配区则调用 sbrk()增加 heap 空间，分主分配区则在 top chunk 中切割出一个 chunk，使之满足分配需求，并将内存指针返回给用户。
 
 + 2.2、malloc源码截图如下列图所示：  
   2.2.1、malloc入口函数：  
-  ![libc_malloc](../ptmalloc/libc_malloc.jpg)  
+  ![libc_malloc](../ptmalloc/libc_malloc.png)  
   2.2.2、int_malloc源码如下图所示：  
   ![int_malloc](../ptmalloc/int_malloc.jpg)  
   2.2.3、sysmalloc大概步骤如下图所示：  
@@ -55,7 +56,7 @@
 + 3.2、free源码截图如下列图所示：  
   + 3.2.1、free入口函数以及释放mmap chunk：  
   ![free_mmap_chunk](../ptmalloc/free_mmap_chunk.jpg)  
-  + 3.2.2、释放非mmap chunk，并且size小于max_fast  
+  + 3.2.2、释放非mmap chunk，并且size小于max_fast。懒得重新截图了，中间少记载了一步，如果大小在32B-2KB，而且tcache有空余则直接放入返回。  
   ![free_fast](../ptmalloc/free_fast.jpg)  
   + 3.2.2、释放非mmap chunk，并且size大于max_fast。  
   ![free_over_fast](../ptmalloc/free_over_fast.jpg)  
@@ -63,9 +64,8 @@
 
 # 4、USE_TCACHE
 + tcache结构体如下图所示：  
-  ![tcache_struct](../ptmalloc/tcache_struct.jpg)
-
-+ 线程私有变量，默认在32B-2KB的内存申请与释放首先都会放入tcache中，所以能加快分配性能，但也可能增加内存碎片和 "false sharing" 的风险。
+  ![tcache_struct](../ptmalloc/tcache_struct.jpg)  
++ 这个宏默认开启，线程私有变量，默认在32B-2KB的内存申请与释放首先都会放入tcache中，所以能加快分配性能，但也可能增加内存碎片和 "false sharing" 的风险。看源码可以通过do_set_tcache_max、do_set_tcache_count等相关函数来设置跟tcache相关的参数，但貌似没有抛出函数给user使用（mallopt没有相关参数）。
 
 # 5、SINGLE_THREAD_P
 + 单线程只有main arean，申请或释放内存时不会加锁。如下图所示：  
