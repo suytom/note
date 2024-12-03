@@ -43,7 +43,7 @@
 # 3、free
 + 3.1、free步骤文字介绍：  
   + 3.1.1、判断传入的指针是否为 0，如果为 0，则什么都不做，直接 return。否则转下一步。  
-  + 3.1.2、判断所需释放的 chunk 是否为 mmaped chunk，如果是，则调用 munmap()释放mmaped chunk，解除内存空间映射，该该空间不再有效。如果开启了 mmap 分配阈值的动态调整机制，并且当前回收的 chunk 大小大于 mmap 分配阈值，将 mmap分配阈值设置为该 chunk 的大小，将 mmap 收缩阈值设定为 mmap 分配阈值的2倍，释放完成，否则跳到下一步。  
+  + 3.1.2、判断所需释放的 chunk 是否为 mmaped chunk，如果是，则调用 munmap()释放mmaped chunk，解除内存空间映射，该该空间不再有效。如果开启了 mmap 分配阈值的动态调整机制（<font color= "#FF0000">默认是开启的，brk和mmap的默认阈值是128KB</font>），并且当前回收的 chunk 大小大于 mmap 分配阈值，将 mmap分配阈值设置为该 chunk 的大小，将 mmap 收缩阈值设定为 mmap 分配阈值的2倍，释放完成，否则跳到下一步。  
   + 3.1.3、判断 chunk 的大小和所处的位置，若 chunk_size <= max_fast，如果开启了TRIM_FASTBINS，则会检查 chunk 是否不位于heap 的顶部，也就是说并不与 top chunk 相邻，则转到下一步，否则跳到第 3.1.5 步。（因为与 top chunk 相邻的小 chunk 也和 top chunk 进行合并，所以这里不仅需要判断大小，还需要判断相邻情况）  
   + 3.1.4、将 chunk 放到 fast bins 中，chunk 放入到 fast bins 中时，并不修改该 chunk 使用状态位 P。也不与相邻的 chunk 进行合并。只是放进去，如此而已。这一步做完之后释放便结束了，程序从 free()函数中返回。  
   + 3.1.5、判断前一个 chunk 是否处在使用中，如果前一个块也是空闲块，则合并。并转下一步。  
