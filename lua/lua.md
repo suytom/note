@@ -220,4 +220,74 @@
       return optimal;
     }
     ```
-  
++ 因此定义一个table时最好是定义即初始化，否则一个个添加元素会导致多次rehash。或者用table.create(数组大小，hash大小)api来创建table。table.create如下所示：  
+  ```c
+  static int tcreate (lua_State *L) 
+  {
+    lua_Unsigned sizeseq = (lua_Unsigned)luaL_checkinteger(L, 1);
+    lua_Unsigned sizerest = (lua_Unsigned)luaL_optinteger(L, 2, 0);
+    luaL_argcheck(L, sizeseq <= UINT_MAX, 1, "out of range");
+    luaL_argcheck(L, sizerest <= UINT_MAX, 2, "out of range");
+    lua_createtable(L, (unsigned)sizeseq, (unsigned)sizerest);
+    return 1;
+  }
+
+  LUA_API void lua_createtable (lua_State *L, unsigned narray, unsigned nrec) 
+  {
+    Table *t;
+    lua_lock(L);
+    t = luaH_new(L);
+    sethvalue2s(L, L->top.p, t);
+    api_incr_top(L);
+    if (narray > 0 || nrec > 0)
+      luaH_resize(L, t, narray, nrec);
+    luaC_checkGC(L);
+    lua_unlock(L);
+  }
+  ```
++ table其他相关API：  
+  + ipairs和pairs：  
+    + ipairs源码如下所示：  
+      ```c
+      static int luaB_ipairs (lua_State *L) 
+      {
+        luaL_checkany(L, 1);
+        lua_pushcfunction(L, ipairsaux);  /* iteration function */
+        lua_pushvalue(L, 1);  /* state */
+        lua_pushinteger(L, 0);  /* initial value */
+        return 3;
+      }
+
+      static int ipairsaux (lua_State *L) 
+      {
+        lua_Integer i = luaL_checkinteger(L, 2);
+        //累加index
+        i = luaL_intop(+, i, 1);
+        lua_pushinteger(L, i);
+        return (lua_geti(L, 1, i) == LUA_TNIL) ? 1 : 2;
+      }
+
+      LUA_API int lua_geti (lua_State *L, int idx, lua_Integer n) 
+      {
+        TValue *t;
+        lu_byte tag;
+        lua_lock(L);
+        t = index2value(L, idx);
+        //查找key为int类型的元素
+        luaV_fastgeti(t, n, s2v(L->top.p), tag);
+        //当原表中该key为空时，会调用luaV_finishget，该函数会调用元表的index元方法，
+        //如果元表的index元方法是个表则重复该操作，如果是个函数则调用该函数
+        if (tagisempty(tag)) {
+          TValue key;
+          setivalue(&key, n);
+          tag = luaV_finishget(L, t, &key, L->top.p, tag);
+        }
+        api_incr_top(L);
+        lua_unlock(L);
+        return novariant(tag);
+      }
+      ```  
+      ipairs遍历table时是从下标1开始只查找本身数组以及元表（元表得有index元方法）数组部分。
+      循环结束判断的指令是OP_TFORLOOP，如下图所示，可知，当value为nil的时候退出。  
+      ![OP_TFORLOOP](../lua/OP_TFORLOOP.png)
+      
