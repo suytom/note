@@ -1,10 +1,10 @@
 # 1、主要数据结构
 + 1、arena（分配区）     
   每个进程只有一个主分配区(main arena)，但可能存在多个非主分配区(non main arena)。分配区数量限制如下图所示：  
-  ![arena_get](../ptmalloc/arena_get.jpg)
+  ![arena_get](../ptmalloc/picture/arena_get.jpg)
 
 + 2、chunk结构体  
-  ![chunk](../ptmalloc/chunk.jpg)  
+  ![chunk](../ptmalloc/picture/chunk.jpg)  
   在图中，chunk 指针指向一个 chunk 的开始，一个 chunk 中包含了用户请求的内存区域和相关的控制信息。图中的 mem 指针才是真正返回给用户的内存指针。
   + a、Chunk 的第二个域的最低一位为 P，它表示前一个块是否在使用中，P 为 0 则表示前一个 chunk 为空闲，这时chunk 的第一个域 prev_size 才有效，prev_size 表示前一个 chunk 的 size，程序可以使用这个值来找到前一个 chunk 的开始地址。当 P 为 1 时，表示前一个 chunk 正在使用中，prev_size无效，程序也就不可以得到前一个chunk的大小。不能对前一个chunk进行任何操作。ptmalloc分配的第一个块总是将 P 设为 1，以防止程序引用到不存在的区域。
   + b、Chunk 的第二个域的倒数第二个位为 M，他表示当前 chunk 是从哪个内存区域获得的虚拟内存。M 为 1 表示该 chunk 是从 mmap 映射区域分配的，否则是从 heap 区域分配的。
@@ -28,17 +28,17 @@
 
 + 2.2、malloc源码截图如下列图所示：  
   2.2.1、malloc入口函数：  
-  ![libc_malloc](../ptmalloc/libc_malloc.png)  
+  ![libc_malloc](../ptmalloc/picture/libc_malloc.png)  
   2.2.2、int_malloc源码如下图所示：  
-  ![int_malloc](../ptmalloc/int_malloc.jpg)  
+  ![int_malloc](../ptmalloc/picture/int_malloc.jpg)  
   2.2.3、sysmalloc大概步骤如下图所示：  
-  ![sysmalloc](../ptmalloc/sysmalloc.jpg)  
+  ![sysmalloc](../ptmalloc/picture/sysmalloc.jpg)  
   2.2.4、超过mmap门限处理如下图所示：  
-  ![mmap_threshold](../ptmalloc/mmap_threshold.jpg)  
+  ![mmap_threshold](../ptmalloc/picture/mmap_threshold.jpg)  
   2.2.5、没超过mmap门限且当前为non main arena时的处理步骤如下图所示：  
-  ![non_main_arena](../ptmalloc/non_main_arena.jpg)  
+  ![non_main_arena](../ptmalloc/picture/non_main_arena.jpg)  
   2.2.6、未超过mmap门限且当前为main arena时的处理步骤如下图所示：  
-  ![main_arena](../ptmalloc/main_arena.jpg)
+  ![main_arena](../ptmalloc/picture/main_arena.jpg)
 
 # 3、free
 + 3.1、free步骤文字介绍：  
@@ -55,18 +55,18 @@
 
 + 3.2、free源码截图如下列图所示：  
   + 3.2.1、free入口函数以及释放mmap chunk：  
-  ![free_mmap_chunk](../ptmalloc/free_mmap_chunk.jpg)  
+  ![free_mmap_chunk](../ptmalloc/picture/free_mmap_chunk.jpg)  
   + 3.2.2、释放非mmap chunk，并且size小于max_fast。懒得重新截图了，中间少记载了一步，如果大小在32B-2KB，而且tcache有空余则直接放入返回。  
-  ![free_fast](../ptmalloc/free_fast.jpg)  
+  ![free_fast](../ptmalloc/picture/free_fast.jpg)  
   + 3.2.2、释放非mmap chunk，并且size大于max_fast。  
-  ![free_over_fast](../ptmalloc/free_over_fast.jpg)  
+  ![free_over_fast](../ptmalloc/picture/free_over_fast.jpg)  
   + 3.2.3、在缩小非主分配区（non-main arena）时，并不会实际缩小内存映射的区域大小。相反，它会采取一些措施来标记这部分内存为只读，以防止进一步的访问或修改。这种策略的目的是为了安全和效率。如果每次缩小非主分配区时都实际缩小内存映射，那么将会涉及系统调用的开销，这会对性能产生不利影响。而且，频繁地调整内存映射的大小也会增加管理的复杂性。
 
 # 4、USE_TCACHE
 + tcache结构体如下图所示：  
-  ![tcache_struct](../ptmalloc/tcache_struct.jpg)  
+  ![tcache_struct](../ptmalloc/picture/tcache_struct.jpg)  
 + 这个宏默认开启，线程私有变量，默认在32B-2KB的内存申请与释放首先都会放入tcache中，所以能加快分配性能，但也可能增加内存碎片和 "false sharing" 的风险。看源码可以通过do_set_tcache_max、do_set_tcache_count等相关函数来设置跟tcache相关的参数，但貌似没有抛出函数给user使用（mallopt没有相关参数）。
 
 # 5、SINGLE_THREAD_P
 + 单线程只有main arean，申请或释放内存时不会加锁。如下图所示：  
-  ![single_thread_malloc](../ptmalloc/single_thread_malloc.jpg)
+  ![single_thread_malloc](../ptmalloc/picture/single_thread_malloc.jpg)

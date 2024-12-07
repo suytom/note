@@ -2,30 +2,30 @@
 
 ## A、主要数据结构
 + stCoRoutineEnv_t：    
-  ![stCoRoutineEnv_t](../libco/stCoRoutineEnv_t.png)
+  ![stCoRoutineEnv_t](../libco/picture/stCoRoutineEnv_t.png)
 
 + stCoEpoll_t：  
-  ![stCoEpoll_t](../libco/stCoEpoll_t.png)
+  ![stCoEpoll_t](../libco/picture//stCoEpoll_t.png)
 
 + stTimeout_t：  
-  ![stTimeout_t](../libco/stTimeout_t.png)
+  ![stTimeout_t](../libco/picture/stTimeout_t.png)
 
 + stCoRoutine_t：  
-  ![stCoRoutine_t](../libco/stCoRoutine_t.png)  
+  ![stCoRoutine_t](../libco/picture/stCoRoutine_t.png)  
 
 + coctx_t:  
-  ![coctx_t](../libco/coctx_t.png)  
+  ![coctx_t](../libco/picture/coctx_t.png)  
   x86架构下32位有8个通用寄存器，64位有16个通用寄存器，rax、rbx、rcx、rdx、rsi、rdi、rbp、rsp、r8-r15。这16个寄存器除了rbp（保存栈底）、rsp（保存栈顶），其余的除了特定的作用外还可以用来保存临时数据、中间结果或用于计算。
   这16个寄存器又分为callee-saved（被调用者保存）和caller-saved（调用者保存）。如下图所示：  
-  ![callee_and_caller](../libco/callee_and_caller.png)  
+  ![callee_and_caller](../libco/picture/callee_and_caller.png)  
   在属于caller-saved的寄存器中，只有r10、r11没有特定的作用，这应该就是libco不保存这两个寄存器的原因。r8、r9可能会用于参数传递。如下图所示（参数再多则通过入栈来传递）：  
-  ![regist](../libco/regist.jpg)  
+  ![regist](../libco/picture/regist.jpg)  
 
 ## B、部分API，其他感觉没啥可写的，正常逻辑没啥特殊点
 + co_create:  
-  ![co_create](../libco/co_create.png)  
+  ![co_create](../libco/picture/co_create.png)  
 + co_init_curr_thread_env:  
-  ![co_init_curr_thread_env](../libco/co_init_curr_thread_env.png)  
+  ![co_init_curr_thread_env](../libco/picture/co_init_curr_thread_env.png)  
 
 + co_create_env：  
   ```c
@@ -93,14 +93,14 @@
   }
   ```  
   <font color= "#FF0000">默认栈大小为128K，大抵是因为glibc初始的brk\mmap阈值是128K（可能会被动态调整，调用mallopt设置阈值或者其他的一些东西的时候会把动态调整关闭，32位的最大阈值是512K，64位最大是32M，ptmalloc里再做记录），这能避免内存碎片。但如果是共享栈的时候，每次做协程切换的时候，原来协程的栈的内容每次都会申请内存来保存，这个大小又没按这个阈值来，有点奇怪。save_stack_buffer代码截图如下所示：</font>  
-  ![save_stack_buffer](../libco/save_stack_buffer.png)
+  ![save_stack_buffer](../libco/picture/save_stack_buffer.png)
 
 + co_resume：  
-  ![co_resume](../libco/co_resume.png)  
+  ![co_resume](../libco/picture/co_resume.png)  
 + coctx_make:  
-  ![coctx_make](../libco/coctx_make.png)  
+  ![coctx_make](../libco/picture/coctx_make.png)  
   <font color= "#FF0000">之所以要做16个字节对齐，是因为gcc现在默认堆栈对齐到16个字节，一些SSE指令如果没有做16个字节对齐会发生段错误。</font>资料地址：https://sourceforge.net/p/fbc/bugs/659/，测试结果如下图所示：  
-  ![stack_aligned](../libco/stack_aligned.png)
+  ![stack_aligned](../libco/picture/stack_aligned.png)
 + coctx_swap:  
   ```S  
 	//将rsp寄存器指向的地址赋值到rax
@@ -151,7 +151,7 @@
   ```  
   对上面的注释的自测结果如下图所示：  
   调用coctx_swap函数前的寄存器信息：  
-  ![before_call_stack](../libco/before_call_stack.png)  
+  ![before_call_stack](../libco/picture/before_call_stack.png)  
   调用coctx_swap函数后的寄存器信息：  
-  ![after_call_stack](../libco/after_call_stack.png)  
+  ![after_call_stack](../libco/picture/after_call_stack.png)  
   
