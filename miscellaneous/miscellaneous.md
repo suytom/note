@@ -1,6 +1,3 @@
-# virtual table  
-  ![virtual_table](../miscellaneous/picture/virtual_table.png)
-
 # compare switch with ifelse  
   ![compare_switch_ifelse_branch_misses](../miscellaneous/picture/compare_switch_ifelse_branch_misses.png)
 
@@ -24,3 +21,27 @@
   有内存屏障代码截图以及测试结果如下图所示：  
   ![fence](../miscellaneous/picture/fence.png)  
   ![fenceresult](../miscellaneous/picture/fence_result.png)  
+
+# virtual table  
+  ```c++  
+  class A
+  {
+    public:
+      virtual void func1(){}
+  };
+  class B
+  {
+    public:
+      virtual void func2(){}
+  };
+  class C : public A, public B
+  {
+  };
+  ```  
+  在64位linux平台上，C的大小毋庸置疑是16个字节。两个虚函数指针，但这两个虚函数指针指向的是哪呢？网上有不少讲这块的博客，基本上都说是指向两个虚函数表。那问题来了，是哪两个虚函数表？类A和类B的虚函数表？那类C的虚函数表呢？测试结果如下所示：  
+  ![virtual_table](../miscellaneous/picture/virtual_table.png)  
+  先说结论，C的两个函数指针都是指向的vtable for C，只是指向的位置不一样。A的虚函数表起始地址是0x555555557cf0，B的虚函数表起始地址是0x555555557ce0，C的虚函数表起始地址是0x555555557cb0。可以看到C的虚函数表中具体存了哪些数据，首先在0x555555557cb8的值是0x0000555555557d48，0x0000555555557d48也可以从表中得出结论是C的typeinfo信息。然后是0x0000555555555268，该地址的反汇编代码如下所示：  
+  ![0x0000555555555268](../miscellaneous/picture/0x0000555555555268.png)  
+  然后又是0x0000555555557d48，最后是0x0000555555555278，反汇编代码如下所示：  
+  ![0x0000555555555278](../miscellaneous/picture/0x0000555555555278.png)  
+  由于C没有重写func1()和func2()，所以C里的函数地址和A、B的是一样的。
