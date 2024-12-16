@@ -3,29 +3,29 @@
 ## A、数据结构
 ### 1、TString  
 + TString  
-  ![struct_tstring](../lua/struct_tstring.png)  
+  ![struct_tstring](../lua/picture/struct_tstring.png)  
 + luaS_newlstr  
-  ![create_string](../lua/create_string.png)  
+  ![create_string](../lua/picture/create_string.png)  
   *PS:过长的字符串（长度大于40）每次都会创建一个新对象，大概是是为了性能考虑，如果全放在global_State中的strt中(strt的数据类型为stringtable)，长度过长时性能较差（计算hash值时会遍历整个字符串）。stringtable缩小扩容都是2倍。*
 + internshrstr  
-  ![create_short_string](../lua/create_short_string.png)
+  ![create_short_string](../lua/picture/create_short_string.png)
 + stringtable  
-  ![string_table](../lua/string_table.png)
+  ![string_table](../lua/picture/string_table.png)
 
 ### 2、Table
 + Table  
-  ![struct_table](../lua/struct_table.png)
+  ![struct_table](../lua/picture/struct_table.png)
 + table相关操作指令：  
   + OP_NEWTABLE：  
-  ![OP_NEWTABLE](../lua/OP_NEWTABLE.png)  
+  ![OP_NEWTABLE](../lua/picture/OP_NEWTABLE.png)  
   + OP_SETLIST：  
-  ![OP_SETLIST](../lua/OP_SETLIST.png)
+  ![OP_SETLIST](../lua/picture/OP_SETLIST.png)
   + OP_SETI：  
-  ![OP_SETI](../lua/OP_SETI.png)  
+  ![OP_SETI](../lua/picture/OP_SETI.png)  
   + OP_SETFIELD：  
-  ![OP_SETFIELD](../lua/OP_SETFIELD.png)  
+  ![OP_SETFIELD](../lua/picture/OP_SETFIELD.png)  
   + OP_SETTABLE：  
-  ![OP_SETTABLE](../lua/OP_SETTABLE.png)
+  ![OP_SETTABLE](../lua/picture/OP_SETTABLE.png)
   + ```local tbl = {1,["test1"] = 4,2,["test2"] = 5,3,["test3"] = 6};```该代码的指令调用：首先调用OP_NEWTABLE，并且b(hash size)、c(array size)不为0，再调用OP_SETFIELD，一个个设置hash部分数据以及OP_SETLIST一次性设置array部分数据。  
   ```local tbl = {}; tbl[1] = 1; tbl["test1"] = 4; tbl[2] = 2;``` 该代码的指令调用：首先调用OP_NEWTABLE，并且b(hash size)、c(array size)为0，再按顺序调用OP_SETI或者OP_SETFIELD，赋值过程中会调整table的数组和hash大小。  
   <font color= "#FF0000">OP_SETTABLE在5.4.7貌似没用了。被拆分为OP_SETI和OP_SETFIELD。</font>  
@@ -273,7 +273,7 @@
         lu_byte tag;
         lua_lock(L);
         t = index2value(L, idx);
-        //查找key为int类型的元素
+        //查找key为int类型的元素，这一步需要说明的是，该key不一定会在数组中。hash表也会找，只要key满足条件。
         luaV_fastgeti(t, n, s2v(L->top.p), tag);
         //当原表中该key为空时，会调用luaV_finishget，该函数会调用元表的index元方法，
         //如果元表的index元方法是个表则重复该操作，如果是个函数则调用该函数
@@ -287,7 +287,33 @@
         return novariant(tag);
       }
       ```  
-      ipairs遍历table时是从下标1开始只查找本身数组以及元表（元表得有index元方法）数组部分。
-      循环结束判断的指令是OP_TFORLOOP，如下图所示，可知，当value为nil的时候退出。  
-      ![OP_TFORLOOP](../lua/OP_TFORLOOP.png)
-      
+      ipairs遍历table时是从下标1开始查找，并且原表没有会去元表中查找。当value为nil时退出。
+    + pairs源码如下所示：  
+      ```c
+      int luaH_next (lua_State *L, Table *t, StkId key) 
+      {
+        unsigned int asize = luaH_realasize(t);
+        unsigned int i = findindex(L, t, s2v(key), asize);  /* find original key */
+        //遍历数组部分
+        for (; i < asize; i++) {  /* try first array part */
+          lu_byte tag = *getArrTag(t, i);
+          if (!tagisempty(tag)) {  /* a non-empty entry? */
+            setivalue(s2v(key), cast_int(i) + 1);
+            farr2val(t, i, tag, s2v(key + 1));
+            return 1;
+          }
+        }
+        for (i -= asize; i < sizenode(t); i++) {  /* hash part */
+          //#define gnode(t,i)	(&(t)->node[i])
+          //遍历table的hash部分,gnode是直接将i当成下标，而不是key
+          if (!isempty(gval(gnode(t, i)))) {  /* a non-empty entry? */
+            Node *n = gnode(t, i);
+            getnodekey(L, s2v(key), n);
+            setobj2s(L, key + 1, gval(n));
+            return 1;
+          }
+        }
+        return 0;  /* no more elements */
+      }
+      ```
+      pairs会遍历数组和hash。
