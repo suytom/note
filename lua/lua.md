@@ -500,8 +500,7 @@
   ```
 ## C、GC
 ![gc_condition](../lua/picture/gc_condition.jpg)  
-只有当GCdebt小于等于0时，才会触发GC，这个GCdebt的单位是对象的个数而不是实际的内存大小。当申请一个新的需要GC的对象时，该变量做-1操作。totalbytes字段才是保存当前lua虚拟机申请过的内存字节数。需要注意的是并不是每次new一个GC对象都会去check gc。如下图所示：
-![new_gc_obj](../lua/picture/new_gc_obj.jpg)  
+只有当GCdebt小于等于0时，才会触发GC，这个GCdebt的单位是对象的个数而不是实际的内存大小。当申请一个新的需要GC的对象时，该变量做-1操作。totalbytes字段才是保存当前lua虚拟机申请过的内存字节数。需要注意的是并不是每次new一个GC对象都会去check gc。
 ### 1、增量式GC
   ```c
   static void incstep (lua_State *L, global_State *g) {
@@ -581,7 +580,7 @@
     break;
   }
   ```
-  <font color= "#FF0000">这三个阶段做的是相同的工作，只是对应的列表不一样而已（GCSswpallgc阶段遍历的是global_State的allgc字段、GCSswpfinobj阶段遍历的是global_State的finobj字段、GCSswptobefnz遍历的是global_State的tobefnz字段），各自检查对应的列表，如果需要回收就回收，不需要则改变对象marked字段。每次最多检查GCSWEEPMAX（20）个对象。
+  <font color= "#FF0000">这三个阶段做的是相同的工作，只是对应的列表不一样而已（GCSswpallgc阶段遍历的是global_State的allgc列表、GCSswpfinobj阶段遍历的是global_State的finobj列表、GCSswptobefnz遍历的是global_State的tobefnz列表），各自检查对应的列表，如果需要回收就回收，不需要则改变对象marked字段。每次最多检查GCSWEEPMAX（20）个对象。
   如果对象的类型是table或者userdata，当设置元表并且有"__gc"元方法时，会将该对象从allgc列表中移除，并放入finobj列表。
   在GCSenteratomic阶段，会调用separatetobefnz函数，这个函数会将finobj列表里白色的移动到tobefnz列表。所以在GCSswpfinobj阶段处理finobj列表时，finobj列表里的元素全是不需要回收的，所以这阶段的作用是将finobj列表里的元素的颜色做修改。</font> 
 
@@ -635,6 +634,8 @@
     g->gcemergency = 0;
   }
   ```
-  
+
 #### GCScallfin
+  每次从tobefnz列表中取出一个对象，并调用对象的"__gc"方法。
+  *ps:在lua中调用collectgarbage("collect")，会阻塞执行完所有步骤，直到gcstate再次处于GCSpause阶段。*
 ### 2、分代式GC
