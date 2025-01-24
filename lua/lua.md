@@ -586,7 +586,7 @@
 
 #### GCSswpend
   在非紧急状态下，如果常驻的string table太空闲，则会回收global_State的strt字段。
-  如果string table的size太大或者申请内存时第一次失败后，会设为紧急状态，并做一次完整步骤的GC，并再次申请内存。
+  如果string table的size太大或者申请内存时第一次失败后或者lua脚本调用collectgarbage("collect")，会设为紧急状态，并做一次完整步骤的GC，并再次申请内存。
   ```c
   static void checkSizes (lua_State *L, global_State *g) {
     if (!g->gcemergency) {
@@ -633,9 +633,24 @@
     }
     g->gcemergency = 0;
   }
+
+  //执行完整的GC，遍历所有对象做标记或回收，最后将gcstate设为GCSpause阶段。
+  static void fullinc (lua_State *L, global_State *g) {
+    if (keepinvariant(g))  /* black objects? */
+      entersweep(L); /* sweep everything to turn them back to white */
+    /* finish any pending sweep phase to start a new cycle */
+    luaC_runtilstate(L, GCSpause, 1);
+    luaC_runtilstate(L, GCScallfin, 1);  /* run up to finalizers */
+    /* 'marked' must be correct after a full GC cycle */
+    lua_assert(g->marked == gettotalobjs(g));
+    luaC_runtilstate(L, GCSpause, 1);  /* finish collection */
+    setpause(g);
+  }
   ```
 
 #### GCScallfin
   每次从tobefnz列表中取出一个对象，并调用对象的"__gc"方法。
-  *ps:在lua中调用collectgarbage("collect")，会阻塞执行完所有步骤，直到gcstate再次处于GCSpause阶段。*
 ### 2、分代式GC
+
+### 3、lua脚本调用
+  在lua中调用collectgarbage("collect")，执行的是上面所记录的luaC_fullgc函数，会阻塞执行完所有步骤，直到gcstate再次处于GCSpause阶段。
