@@ -1,6 +1,6 @@
-# <center>Lua源码阅读记录(5.4.7)</center>
+# <center>Lua源码粗浅解析(5.4.7)</center>
 
-## A、数据结构
+## A、常见数据结构
 ### 1、TString  
 + TString  
   ![struct_tstring](../lua/picture/struct_tstring.png)  
@@ -317,3 +317,324 @@
       }
       ```
       pairs会遍历数组和hash。
++ 几个特殊的table：  
+  + registry表，key为LUA_REGISTRYINDEX，返回的是global_State的l_registry字段。
+  + global表，key为LUA_RIDX_GLOBALS（2），保存在l_registry表，字面意思全局变量会放在这个表里。
+  + loaded表，key为LUA_LOADED_TABLE（_loaded），保存在l_registry表，调用require加载解析过的lua文件或代码会保存在这个表里。调用load加载代码不会保存在该表中。require和load都会调用lua_load来解析代码。
+    ```c
+    LUA_API int lua_load (lua_State *L, lua_Reader reader, void *data, const char *chunkname, const char *mode) 
+    {
+      ZIO z;
+      int status;
+      lua_lock(L);
+      if (!chunkname) chunkname = "?";
+      luaZ_init(L, &z, reader, data);
+      status = luaD_protectedparser(L, &z, chunkname, mode);
+      if (status == LUA_OK) {  /* no errors? */
+        LClosure *f = clLvalue(s2v(L->top.p - 1));  /* get new function */
+        //load什么样的代码upvalue size会小于1？
+        //require("return 1")这样的代码，upvalue size都是1
+        if (f->nupvalues >= 1) {  /* does it have an upvalue? */
+          /* get global table from registry */
+          TValue gt;
+          getGlobalTable(L, &gt);
+          /* set global table as 1st upvalue of 'f' (may be LUA_ENV) */
+          setobj(L, f->upvals[0]->v.p, &gt);
+          luaC_barrier(L, f->upvals[0], &gt);
+        }
+      }
+      lua_unlock(L);
+      return status;
+    }
+    ```
+    从上面代码可以看出，会将解析生成的LClosure的第一个upvalue指向global表，而当定义非local变量的时候，会调用OP_SETTABUP，给第一个upvalue赋值，此时第一个upvalue指向的是global表。这也就是说全局变量会放在global表。
+### 3、CClosure和LClosure  
+  ```c
+  #define ClosureHeader \
+  CommonHeader; lu_byte nupvalues; GCObject *gclist
+
+  typedef struct CClosure {
+    ClosureHeader;        
+    lua_CFunction f;      //函数指针
+    TValue upvalue[1];  /* list of upvalues */
+  } CClosure;
+
+  typedef struct LClosure {
+    ClosureHeader;    //nupvalues upvalue的数量、gclist gc相关
+    struct Proto *p;
+    UpVal *upvals[1];  /* list of upvalues */
+  } LClosure;
+  ```
+  UpVal结构体的定义如下：
+  ```c
+  typedef struct UpVal {
+    CommonHeader;
+    union {
+      TValue *p;  /* points to stack or to its own value */
+      ptrdiff_t offset;  /* used while the stack is being reallocated */
+    } v;
+    union {
+      struct {  /* (when open) */
+        struct UpVal *next;  /* linked list */
+        struct UpVal **previous;
+      } open;
+      TValue value;  /* the value (when closed) */
+    } u;
+  } UpVal;
+  ```
+  LClosure的upvalue分为open和close两种状态，当v.p不是指向u.value的时候就是open，当v.p指向u.value就是close的。下面通过一个实例来解释。
+  ```lua
+  function test()
+    local a = 1
+    return function()
+        a = a + 1
+    end
+  end
+
+  local testfunc = test()
+  testfunc()
+  testfunc()
+  ```
+  当调用函数test生成一个LClosure时（pushclosure），此时a的作用域还未结束，此时这个upvalue就是open的，v.p指向的是a在lua栈上的地址，当函数test执行结束时，a的作用域结束，lua栈回收，此时upvalue会变成close（luaF_closeupval），会将原来的值赋值给u.value，并且v.p也会指向u.value。当upvalue是open的时候，会记录在lua_State的openupval字段。当变成close的时候，会从openupvalue双向列表里删除。
+## B、协程
+### 1、创建协程luaB_cocreate
+  ```c
+  static int luaB_cocreate (lua_State *L) {
+    lua_State *NL;
+    //此时栈顶必须是一个函数。如果执行local co = coroutine.create(counter)，
+    //首先会执行OP_CLOSURE，创建一个LClosure对象放在栈顶
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    //创建一个新的lua_State对象放在栈顶
+    NL = lua_newthread(L);
+    //将LClosure对象再次压入栈顶
+    lua_pushvalue(L, 1);  /* move function to top */
+    //将栈顶的1个数据（也就是LClosure对象）复制到NL的栈顶，并且L的栈顶收缩
+    lua_xmove(L, NL, 1);  /* move function from L to NL */
+    return 1;
+  }
+  ```
+### 2、唤起协程luaB_coresume
+  ```c
+  static int luaB_coresume (lua_State *L) {
+    //此时需要切换的协程处于栈顶
+    lua_State *co = getco(L);
+    int r;
+    //lua_gettop(L) - 1的作用是获取参数个数
+    r = auxresume(L, co, lua_gettop(L) - 1);
+    if (l_unlikely(r < 0)) {
+      lua_pushboolean(L, 0);
+      lua_insert(L, -2);
+      return 2;  /* return false + error message */
+    }
+    else {
+      lua_pushboolean(L, 1);
+      lua_insert(L, -(r + 1));
+      return r + 1;  /* return true + 'resume' returns */
+    }
+  }
+
+  static int auxresume (lua_State *L, lua_State *co, int narg) {
+    int status, nres;
+    if (l_unlikely(!lua_checkstack(co, narg))) {
+      lua_pushliteral(L, "too many arguments to resume");
+      return -1;  /* error flag */
+    }
+    //将参数复制到协程co
+    lua_xmove(L, co, narg);
+    //就不再进一步展开了，在这一步中会调用setjmp，将当前的执行环境（包括寄存器、堆栈指针等）
+    //保存到协程co的errorJmp字段上，然后执行协程co的指令
+    status = lua_resume(co, L, narg, &nres);
+    if (l_likely(status == LUA_OK || status == LUA_YIELD)) {
+      if (l_unlikely(!lua_checkstack(L, nres + 1))) {
+        lua_pop(co, nres);  /* remove results anyway */
+        lua_pushliteral(L, "too many results to resume");
+        return -1;  /* error flag */
+      }
+      //将返回值复制到L的栈上
+      lua_xmove(co, L, nres);  /* move yielded values */
+      return nres;
+    }
+    else {
+      lua_xmove(co, L, 1);  /* move error message */
+      return -1;  /* error flag */
+    }
+  }
+  ```
+### 3、挂起协程luaB_yield
+  ```c
+  static int luaB_yield (lua_State *L) {
+    return lua_yield(L, lua_gettop(L));
+  }
+
+  LUA_API int lua_yieldk (lua_State *L, int nresults, lua_KContext ctx, lua_KFunction k) {
+    CallInfo *ci;
+    luai_userstateyield(L, nresults);
+    lua_lock(L);
+    ci = L->ci;
+    api_checkpop(L, nresults);
+    if (l_unlikely(!yieldable(L))) {
+      if (L != G(L)->mainthread)
+        luaG_runerror(L, "attempt to yield across a C-call boundary");
+      else
+        luaG_runerror(L, "attempt to yield from outside a coroutine");
+    }
+    //此时的L是之前调用resume唤起的协程
+    //将状态设为挂起，记录返回值个数
+    L->status = LUA_YIELD;
+    ci->u2.nyield = nresults;  /* save number of results */
+    if (isLua(ci)) {  /* inside a hook? */
+      lua_assert(!isLuacode(ci));
+      api_check(L, nresults == 0, "hooks cannot yield values");
+      api_check(L, k == NULL, "hooks cannot continue after yielding");
+    }
+    else {
+      if ((ci->u.c.k = k) != NULL)  /* is there a continuation? */
+        ci->u.c.ctx = ctx;  /* save context */
+      //调用longjmp，跳转到之前resume保存的地方
+      luaD_throw(L, LUA_YIELD);
+    }
+    lua_assert(ci->callstatus & CIST_HOOKED);  /* must be inside a hook */
+    lua_unlock(L);
+    return 0;  /* return to 'luaD_hook' */
+  }
+  ```
+## C、GC
+![gc_condition](../lua/picture/gc_condition.jpg)  
+只有当GCdebt小于等于0时，才会触发GC，这个GCdebt的单位是对象的个数而不是实际的内存大小。当申请一个新的需要GC的对象时，该变量做-1操作。totalbytes字段才是保存当前lua虚拟机申请过的内存字节数。需要注意的是并不是每次new一个GC对象都会去check gc。如下图所示：
+![new_gc_obj](../lua/picture/new_gc_obj.jpg)  
+### 1、增量式GC
+  ```c
+  static void incstep (lua_State *L, global_State *g) {
+    //STEPSIZE默认值为250
+    l_obj stepsize = applygcparam(g, STEPSIZE, 100);
+    //work2do 为STEPSIZE的两倍
+    l_obj work2do = applygcparam(g, STEPMUL, stepsize);
+    int fast = 0;
+    if (work2do == 0) {  /* special case: do a full collection */
+      work2do = MAX_LOBJ;  /* do unlimited work */
+      fast = 1;
+    }
+    do {  /* repeat until pause or enough work */
+      l_obj work = singlestep(L, fast);  /* perform one single step */
+      if (g->gckind == KGC_GENMINOR)  /* returned to minor collections? */
+        return;  /* nothing else to be done here */
+      work2do -= work;
+    } while (work2do > 0 && g->gcstate != GCSpause);
+    if (g->gcstate == GCSpause)
+      setpause(g);  /* pause until next cycle */
+    else
+      luaE_setdebt(g, stepsize);
+  }
+  ```
+
+#### GCSpause
+  ```c
+  //清理灰色链表并且标记根节点（单步）
+  static void restartcollection (global_State *g) {
+    cleargraylists(g);
+    g->marked = NFIXED;
+    markobject(g, g->mainthread);
+    markvalue(g, &g->l_registry);
+    markmt(g);
+    markbeingfnz(g);  /* mark any finalizing object left from previous cycle */
+  }
+  ```
+
+#### GCSpropagate
+  ```c
+  static void propagatemark (global_State *g) {
+    GCObject *o = g->gray;
+    //设置为黑色，这里要跟luaC_barrier对应看，假如在GCSpropagate阶段，global表已经被扫描过了，global表被标记为黑色。
+    //此时又定义一个全局变量，那么在luaC_barrier里会将global表又塞回gray列表。
+    nw2black(o);
+    //从灰色链表里删除
+    g->gray = *getgclist(o);  /* remove from 'gray' list */
+    switch (o->tt) {
+      case LUA_VTABLE: traversetable(g, gco2t(o)); break;
+      case LUA_VUSERDATA: traverseudata(g, gco2u(o)); break;
+      case LUA_VLCL: traverseLclosure(g, gco2lcl(o)); break;
+      case LUA_VCCL: traverseCclosure(g, gco2ccl(o)); break;
+      case LUA_VPROTO: traverseproto(g, gco2p(o)); break;
+      case LUA_VTHREAD: traversethread(g, gco2th(o)); break;
+      default: lua_assert(0);
+    }
+  }
+  ```
+
+#### GCSenteratomic
+  这个阶段是也是单步的，需要在这一步明确所有对象的颜色，并且在最后将global_State的currentwhite设置为新白色。
+#### GCSswpallgc、GCSswpfinobj、GCSswptobefnz
+  ```c
+  case GCSswpallgc: {  /* sweep "regular" objects */
+    sweepstep(L, g, GCSswpfinobj, &g->finobj, fast);
+    work = GCSWEEPMAX;
+    break;
+  }
+  case GCSswpfinobj: {  /* sweep objects with finalizers */
+    sweepstep(L, g, GCSswptobefnz, &g->tobefnz, fast);
+    work = GCSWEEPMAX;
+    break;
+  }
+  case GCSswptobefnz: {  /* sweep objects to be finalized */
+    sweepstep(L, g, GCSswpend, NULL, fast);
+    work = GCSWEEPMAX;
+    break;
+  }
+  ```
+  <font color= "#FF0000">这三个阶段做的是相同的工作，只是对应的列表不一样而已（GCSswpallgc阶段遍历的是global_State的allgc字段、GCSswpfinobj阶段遍历的是global_State的finobj字段、GCSswptobefnz遍历的是global_State的tobefnz字段），各自检查对应的列表，如果需要回收就回收，不需要则改变对象marked字段。每次最多检查GCSWEEPMAX（20）个对象。
+  如果对象的类型是table或者userdata，当设置元表并且有"__gc"元方法时，会将该对象从allgc列表中移除，并放入finobj列表。
+  在GCSenteratomic阶段，会调用separatetobefnz函数，这个函数会将finobj列表里白色的移动到tobefnz列表。所以在GCSswpfinobj阶段处理finobj列表时，finobj列表里的元素全是不需要回收的，所以这阶段的作用是将finobj列表里的元素的颜色做修改。</font> 
+
+#### GCSswpend
+  在非紧急状态下，如果常驻的string table太空闲，则会回收global_State的strt字段。
+  如果string table的size太大或者申请内存时第一次失败后，会设为紧急状态，并做一次完整步骤的GC，并再次申请内存。
+  ```c
+  static void checkSizes (lua_State *L, global_State *g) {
+    if (!g->gcemergency) {
+      if (g->strt.nuse < g->strt.size / 4)  /* string table too big? */
+        luaS_resize(L, g->strt.size / 2);
+    }
+  }
+
+  //首次内存申请失败，则会执行这个函数
+  static void *tryagain (lua_State *L, void *block, size_t osize, size_t nsize) {
+    global_State *g = G(L);
+    if (cantryagain(g)) {
+      luaC_fullgc(L, 1);  /* try to free some memory... */
+      return callfrealloc(g, block, osize, nsize);  /* try again */
+    }
+    else return NULL;  /* cannot run an emergency collection */
+  }
+
+  static void growstrtab (lua_State *L, stringtable *tb) {
+    //global的strt太大
+    if (l_unlikely(tb->nuse == INT_MAX)) {  /* too many strings? */
+      luaC_fullgc(L, 1);  /* try to free some... */
+      if (tb->nuse == INT_MAX)  /* still too many? */
+        luaM_error(L);  /* cannot even create a message... */
+    }
+    if (tb->size <= MAXSTRTB / 2)  /* can grow string table? */
+      luaS_resize(L, tb->size * 2);
+  }
+
+  void luaC_fullgc (lua_State *L, int isemergency) {
+    global_State *g = G(L);
+    lua_assert(!g->gcemergency);
+    //设为紧急状态
+    g->gcemergency = cast_byte(isemergency);  /* set flag */
+    //阻塞执行一次完整步骤的GC，遍历所有的对象
+    switch (g->gckind) {
+      case KGC_GENMINOR: fullgen(L, g); break;
+      case KGC_INC: fullinc(L, g); break;
+      case KGC_GENMAJOR:
+        g->gckind = KGC_INC;
+        fullinc(L, g);
+        g->gckind = KGC_GENMAJOR;
+        break;
+    }
+    g->gcemergency = 0;
+  }
+  ```
+  
+#### GCScallfin
+### 2、分代式GC
