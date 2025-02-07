@@ -5,35 +5,276 @@ std::atomic自定义类型的有可能不是lock-free的原因：
 3、实现复杂性：对于内置类型，编译器和标准库可以很容易地利用硬件指令来实现高效的原子操作。但对于复杂的自定义类型，实现高效的原子操作更为复杂。
 4、硬件限制：不同的处理器和硬件平台可能有不同的原子操作支持和限制。这可能导致为某些自定义类型实现lock-free原子操作的困难。
 
-# 2、Mutex
-Linux中的互斥锁（Mutex）是一种用于保护共享资源的同步原语。其底层实现原理主要基于内核提供的原子操作和自旋锁机制。
-互斥锁的实现主要包括以下几个关键部分：
-1、原子操作：Linux内核提供了一组原子操作函数，这些函数可以在多线程环境中安全地执行一些基本的操作，如增加、减少、设置等。这些原子操作可以确保在多线程环境中对共享资源的操作是原子的，不会被其他线程打断。
-2、自旋锁：自旋锁是一种特殊的锁，当一个线程试图获取自旋锁但该锁已经被其他线程持有时，该线程会一直循环等待（自旋），直到获得锁为止。Linux中的自旋锁与互斥锁紧密相关，互斥锁的实现通常会使用自旋锁来确保
-线程安全地获取和释放锁。
-3、互斥锁结构体：内核定义了一个互斥锁的数据结构，该结构体包含了与互斥锁相关的各种信息，如指向自旋锁的指针、指向等待队列的指针等。
-总的来说，Linux中互斥锁的底层实现原理主要是基于原子操作和自旋锁机制，通过这些机制来确保在多线程环境中对共享资源的互斥访问。
-部分源码截图如下：
-mutex结构体：
-![struct_mutex](../linux_lock/picture/struct_mutex.jpg)
-mutex的lock和unlock：
-![mutex_lock_and_unlock](../linux_lock/picture/mutex_lock_and_unlock.jpg)
+# 2、spin lock(自旋锁)
+Linux中的spin_lock其实就是一个int类型的变量，使用CPU的原子指令实现自旋锁，不会挂起线程，一直循环等待。
 
-# 3、Spin Lock(自旋锁)
-Linux中的spin_lock其实就是一个int类型的变量，使用CPU的原子指令实现自旋锁，不会挂起线程，一直循环等待。所以单核CPU不能使用自旋锁(当然现在应该也没有单核的CPU)。
+# 3、mutex（glibc版本为2.29）
+__pthread_mutex_s:  
+```c
+struct __pthread_mutex_s
+{
+    int __lock __LOCK_ALIGNMENT;    //锁
+    unsigned int __count;           //递归类型加锁次数
+    int __owner;                    //当前持有锁的线程ID
+    #if !__PTHREAD_MUTEX_NUSERS_AFTER_KIND
+    unsigned int __nusers;
+    #endif
+    /* KIND must stay at this position in the structure to maintain
+        binary compatibility with static initializers.  */
+    int __kind;                     //锁的类型
+    __PTHREAD_COMPAT_PADDING_MID
+    #if __PTHREAD_MUTEX_NUSERS_AFTER_KIND
+    unsigned int __nusers;          //当前等待和加锁的线程数
+    #endif
+    #if !__PTHREAD_MUTEX_USE_UNION
+    __PTHREAD_SPINS_DATA;           //PTHREAD_MUTEX_ADAPTIVE_NP类型相关，用来计算最大自旋次数
+    __pthread_list_t __list;        //线程列表
+    # define __PTHREAD_MUTEX_HAVE_PREV      1
+    #else
+    __extension__ union
+    {
+        __PTHREAD_SPINS_DATA;
+        __pthread_slist_t __list;
+    };
+    # define __PTHREAD_MUTEX_HAVE_PREV      0
+    #endif
+    __PTHREAD_COMPAT_PADDING_END
+};
+```
+首先需要说明的是lock mutex并不是一定就会有用户态和内核态的切换（具体的实现再写），然后mutex的底层唤醒机制用的是futex。 
+__pthread_mutex_lock:  
+```c 
+int __pthread_mutex_lock (pthread_mutex_t *mutex)
+{
+    //获取mutex的类型
+    unsigned int type = PTHREAD_MUTEX_TYPE_ELISION (mutex);
+
+    //PTHREAD_MUTEX_ELISION_FLAGS_NP
+    if (__builtin_expect (type & ~(PTHREAD_MUTEX_KIND_MASK_NP
+                    | PTHREAD_MUTEX_ELISION_FLAGS_NP), 0))
+        return __pthread_mutex_lock_full (mutex);
+
+    //PTHREAD_MUTEX_TIMED_NP 默认类型
+    if (__glibc_likely (type == PTHREAD_MUTEX_TIMED_NP))
+    {
+        //调用lll_lock加锁
+        ...
+    }
+    //PTHREAD_MUTEX_RECURSIVE_NP 递归类型
+    else if (__builtin_expect (PTHREAD_MUTEX_TYPE (mutex)
+                    == PTHREAD_MUTEX_RECURSIVE_NP, 1))
+    {
+        //获取当前的线程ID，如果当前的线程ID等于mutex->__data.__owner，则累加mutex->__data.__count并返回
+        //否则调用lll_lock加锁
+        ...
+    }
+    //PTHREAD_MUTEX_ADAPTIVE_NP 这个类型为了避免用户态和内核态的切换，会做短暂的自旋操作
+    else if (__builtin_expect (PTHREAD_MUTEX_TYPE (mutex)
+                == PTHREAD_MUTEX_ADAPTIVE_NP, 1))
+    {
+        //尝试加锁，如果被锁则短暂的自旋
+        if (...)
+        {
+            //短暂的自旋，超过最大次数则调用lll_lock加锁
+            ...
+        }
+    }
+    //PTHREAD_MUTEX_ERRORCHECK_NP类型,
+    else
+    {
+        //如果mutex->__data.__owner和当前线程ID相等，则返回EDEADLK，
+        //否则调用lll_lock (mutex)
+        ...
+    }
+
+    //赋值mutex->__data.__owner等字段
+    ...
+
+    return 0;
+}
+```
+详细代码截图如下所示：  
+![mutex_lock](../linux_lock/picture/mutex_lock.jpg)  
+![lll_lock](../linux_lock/picture/lll_lock.jpeg)  
+__lll_lock_wait_private汇编代码中，当futex被唤醒后，还会有CAS操作来避免内核的虚假唤醒。
+__pthread_mutex_unlock:  
+```c 
+int
+attribute_hidden
+__pthread_mutex_unlock_usercnt (pthread_mutex_t *mutex, int decr)
+{
+    int type = PTHREAD_MUTEX_TYPE_ELISION (mutex);
+    if (__builtin_expect (type &
+            ~(PTHREAD_MUTEX_KIND_MASK_NP|PTHREAD_MUTEX_ELISION_FLAGS_NP), 0))
+        return __pthread_mutex_unlock_full (mutex, decr);
+
+    //PTHREAD_MUTEX_TIMED_NP 默认类型
+    if (__builtin_expect (type, PTHREAD_MUTEX_TIMED_NP)
+        == PTHREAD_MUTEX_TIMED_NP)
+    {
+        //重置mutex->__data.__owner，mutex->__data.__nusers字段减1，并且调用lll_unlock解锁
+        ...
+    }
+    else if (__glibc_likely (type == PTHREAD_MUTEX_TIMED_ELISION_NP))
+        {
+        /* Don't reset the owner/users fields for elision.  */
+        return lll_unlock_elision (mutex->__data.__lock, mutex->__data.__elision,
+                        PTHREAD_MUTEX_PSHARED (mutex));
+        }
+    //PTHREAD_MUTEX_RECURSIVE_NP 递归类型
+    else if (__builtin_expect (PTHREAD_MUTEX_TYPE (mutex)
+                    == PTHREAD_MUTEX_RECURSIVE_NP, 1))
+    {
+        //如果mutex->__data.__owner不是当前线程，返回EPERM
+        ...
+
+        //mutex->__data.__count做减1操作，如果结果不为0直接返回。某一线程重复加锁
+        ...
+
+        //重置mutex->__data.__owner，mutex->__data.__nusers字段减1，并且调用lll_unlock解锁
+        ...
+    }
+    //PTHREAD_MUTEX_ADAPTIVE_NP
+    else if (__builtin_expect (PTHREAD_MUTEX_TYPE (mutex)
+                    == PTHREAD_MUTEX_ADAPTIVE_NP, 1))
+    {
+        //重置mutex->__data.__owner，mutex->__data.__nusers字段减1，并且调用lll_unlock解锁
+        ...
+    }
+    //PTHREAD_MUTEX_ERRORCHECK_NP
+    else
+    {
+        //检查mutex->__data.__owner和当前线程ID相等，以及当前是否被锁，失败则返回EPERM
+        ...
+
+        //重置mutex->__data.__owner，mutex->__data.__nusers字段减1，并且调用lll_unlock解锁
+        ...
+    }
+}
+```
+详细代码截图如下所示：  
+![mutex_unlock](../linux_lock/picture/mutex_unlock.jpeg)  
+![lll_unlock](../linux_lock/picture/lll_unlock.jpeg)  
+PTHREAD_MUTEX_TIMED_NP(默认类型)、PTHREAD_MUTEX_ADAPTIVE_NP在解锁的时候没有判断锁的持有线程是否为当前线程，所以需要注意加锁解锁相对应，也可以用PTHREAD_MUTEX_ERRORCHECK_NP，会做检查，只是性能稍差。
 
 # 4、条件变量
-pthread_cond_wait：
-![condition_wait](../linux_lock/picture/condition_wait.jpg)
+```c 
+static __always_inline int
+__pthread_cond_wait_common (pthread_cond_t *cond, pthread_mutex_t *mutex,
+    const struct timespec *abstime)
+{
+    //释放mutex
+    ...
+
+    //调用futex(FUTEX_WAIT, …)
+    ...
+
+    //被唤醒后重新尝试获取mutex
+    ...
+}
+```
+```c 
+int
+__pthread_cond_signal (pthread_cond_t *cond)
+{
+    //调用futex(FUTEX_WAKE, …)
+    ...
+}
+```
 
 # 5、信号量
-sem_post：
-![sem_post](../linux_lock/picture/sem_post.jpg)
-sem_wait：
-![sem_wait](../linux_lock/picture/sem_wait.jpg)
+new_sem:  
+```c 
+struct new_sem
+{
+    #if __HAVE_64B_ATOMICS
+        /* The data field holds both value (in the least-significant 32 bits) and
+            nwaiters.  */
+        # if __BYTE_ORDER == __LITTLE_ENDIAN
+        #  define SEM_VALUE_OFFSET 0
+        # elif __BYTE_ORDER == __BIG_ENDIAN
+        #  define SEM_VALUE_OFFSET 1
+        # else
+        # error Unsupported byte order.
+        # endif
+        # define SEM_NWAITERS_SHIFT 32
+        # define SEM_VALUE_MASK (~(unsigned int)0)
+        uint64_t data;      //futex监听的地址
+        int private;        //是否单个进程私有
+        int pad;
+    #else
+        # define SEM_VALUE_SHIFT 1
+        # define SEM_NWAITERS_MASK ((unsigned int)1)
+        unsigned int value;
+        int private;
+        int pad;
+        unsigned int nwaiters;
+    #endif
+};
+```  
+__new_sem_post:  
+```c 
+int __new_sem_post (sem_t *sem)
+{
+    struct new_sem *isem = (struct new_sem *) sem;
+    int private = isem->private;
 
-# 6、条件变量和信号量比较
-+ 1、条件变量存在虚假唤醒而信号量不会。条件变量和信号量虽然底层都使用了 futex 机制来实现，但它们在使用方式和语义上存在一些差异，这导致了它们在处理虚假唤醒方面的不同表现。<font color= "#FF0000"> 在 Linux 内核中，条件变量的实现涉及更多的调度和检查操作，因此容易出现虚假唤醒的情况；而信号量的实现更加简单和原子性，因此不会出现虚假唤醒的情况。</font>
-+ 2、条件变量和信号量在性能方面没有绝对的优劣之分，因为它们的使用场景和适用范围不同，而且在实际应用中，性能的差异也取决于具体的实现和场景。 <font color= "#dd0000">条件变量主要用于实现线程之间的同步和通信。当线程调用条件变量的等待函数时，它会将自身放入等待队列，并释放互斥锁，然后进入睡眠状态。当其他线程修改了条件并调用通知函数时，一个或多个等待线程将被唤醒。条件变量的典型应用场景包括生产者-消费者问题、线程间的数据共享等。在某些情况下，条件变量的性能可能优于信号量，因为它们减少了不必要的阻塞和上下文切换。然而，条件变量的实现通常比信号量更复杂，因为需要处理虚假唤醒和其他同步问题。</font><font color= "#dd00dd">信号量是一种更通用的同步工具，用于控制对共享资源的访问。信号量的值表示可用资源的数量，当线程需要获取资源时，它会尝试减少信号量的值。如果信号量的值为零，线程将会阻塞或等待。当其他线程释放资源时，它会增加信号量的值并唤醒一个或多个等待线程。在某些情况下，信号量的性能可能优于条件变量，因为它们避免了虚假唤醒和其他同步问题。然而，信号量的实现通常比条件变量更复杂，因为需要处理资源计数和死锁等问题。</font>
+    //当前值
+    uint64_t d = atomic_load_relaxed (&isem->data);
+    do
+    {
+        //是否超过最大值SEM_VALUE_MAX（int类型的最大值）
+        if ((d & SEM_VALUE_MASK) == SEM_VALUE_MAX)
+        {
+            __set_errno (EOVERFLOW);
+            return -1;
+        }
+    }
+    //CAS操作，data字段+1
+    while (!atomic_compare_exchange_weak_release (&isem->data, &d, d + 1));
 
-综上所述，虽然条件变量和信号量底层都使用 futex 实现，但由于它们的使用方式和语义不同，导致了在处理虚假唤醒方面的不同表现。条件变量主要用于同步和通信，而信号量主要用于资源访问控制。条件变量和信号量在性能方面没有绝对的优劣之分，选择使用哪个同步工具应该根据具体的场景和需求来决定。在某些场景下，条件变量的性能可能优于信号量，而在其他场景下，信号量的性能可能更优。
+    //如果大于0，则唤醒一个线程
+    if ((d >> SEM_NWAITERS_SHIFT) > 0)
+        futex_wake (((unsigned int *) &isem->data) + SEM_VALUE_OFFSET, 1, private);
+
+    return 0;
+}
+```  
+详细代码截图如下所示：  
+![sem_post](../linux_lock/picture/sem_post.jpeg)  
+__new_sem_wait:  
+```c 
+int
+__new_sem_wait (sem_t *sem)
+{
+    //如果data字段大于0，并且CAS data字段做减1操作成功，则直接返回0
+    if (...)
+        return 0;
+    else
+    {
+        //如果data字段等于0，则调用futex wait，被唤醒后原子操作data字段做减1操作
+        if (data == 0)
+        {
+            futex(wait);
+            cas(data -1);
+        }
+        //
+        else
+        {
+            cas(data-1);
+        }
+    }
+}
+```  
+详细代码截图如下所示：  
+![sem_wait](../linux_lock/picture/sem_wait.jpeg)  
+![sem_wait_fast](../linux_lock/picture/sem_wait_fast.jpeg)  
+![sem_wait_slow](../linux_lock/picture/sem_wait_slow.jpeg)  
+通过源码的注释也能知道当futex被唤醒后，还会有CAS操作来避免内核的虚假唤醒。
+
+# 6、三者比较
++ 1、关于条件变量的虚假唤醒  
+  首先需要说明的是三种底层唤醒机制都是用的futex，但只有条件变量存在虚假唤醒。这是有两个方面导致的，条件变量的实现以及内核的原因，解释如下：  
+  实现方面：futex唤醒和mutex加锁之间的竞态，上面代码中有介绍pthread_cond_wait内部的行为大致为：1、释放mutex。2、调用futex(FUTEX_WAIT, …)进入休眠。3、被pthread_cond_signal或pthread_cond_broadcast唤醒。4、重新尝试获取 mutex。由于步骤3和4不是原子的，多个被唤醒的线程可能会竞争mutex，导致一些线程在真正获取mutex之前再次进入等待。  
+  内核方面：futex_wait()可能会被虚假唤醒（例如：信号、调度、内核 Bug 等因素）。  
+  而互斥锁和信号量不会因为Linux内核可能出现的spurious wakeup导致虚假唤醒，这是因为互斥锁和信号量futex被唤醒后，还会通过原子操作检查监控的值是否满足条件。
