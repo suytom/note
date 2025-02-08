@@ -543,8 +543,8 @@
   ```c
   static void propagatemark (global_State *g) {
     GCObject *o = g->gray;
-    //设置为黑色，这里要跟luaC_barrier对应看，假如在GCSpropagate阶段，global表已经被扫描过了，global表被标记为黑色。
-    //此时又定义一个全局变量，那么在luaC_barrier里会将global表又塞回gray列表。
+    //设置为黑色，这里要跟luaC_barrierback对应看，假如在GCSpropagate阶段，global表已经被扫描过了，global表被标记为黑色。
+    //此时又定义一个全局变量，那么在luaC_barrierback里会将global表又塞回gray列表。
     nw2black(o);
     //从灰色链表里删除
     g->gray = *getgclist(o);  /* remove from 'gray' list */
@@ -558,7 +558,10 @@
       default: lua_assert(0);
     }
   }
-  ```
+  ```  
+  **<font color= "#6F006F">luaC_barrierback和luaC_barrier，关于这两个网上解释一大堆，但没有我特别信服的文章。在这里写下此时的思考，之后如果发现理解不对再改。</font>**  
+  **<font color= "#FF0000">luaC_barrierback(L,父节点，子节点)如果父节点是黑色并且子节点是白色，则将父节点改为灰色，放入grayagain列表。luaC_barrier(L,父节点，子节点)如果父节点是黑色并且子节点是白色，直接将子节点改为黑色。  
+    按我的理解，这两种其实可以互相替换，或者只保留一个。这两种的主要分别是作用的对象类型上，table的赋值用luaC_barrierback，这是因为table赋值是经常性的操作，用luaC_barrierback放到grayagain列表，在之后一次性做标记。而upvalue的改变用luaC_barrier是因为upvalue的变动不是经常性的，这样能减少遍历的对象，提升性能。</font>**
 
 #### GCSenteratomic
   这个阶段是也是单步的，需要在这一步明确所有对象的颜色，并且在最后将global_State的currentwhite设置为新白色。
