@@ -661,4 +661,28 @@ finishShutdown
     }
   }
   ```  
-+ 
+# 淘汰策略
++ 相关参数：
+  + `maxmemory`：默认值为0，也就是默认关闭，不会主动淘汰
+  + `maxmemory-policy`：如下图所示：  
+    ![evict_type](../redis/picture/evict_type.jpeg)  
+  + `maxmemory-samples`：随机采样数量，默认值为5，最大不能超过64
+  + `maxmemory-eviction-tenacity`：淘汰数据的强度，其实就是根据这个值算一个时间用作淘汰数据的用时限制。源码如下所示：  
+  ```c
+  static unsigned long evictionTimeLimitUs(void) {
+        serverAssert(server.maxmemory_eviction_tenacity >= 0);
+        serverAssert(server.maxmemory_eviction_tenacity <= 100);
+
+        if (server.maxmemory_eviction_tenacity <= 10) {
+            /* A linear progression from 0..500us */
+            return 50uL * server.maxmemory_eviction_tenacity;
+        }
+
+        if (server.maxmemory_eviction_tenacity < 100) {
+            /* A 15% geometric progression, resulting in a limit of ~2 min at tenacity==99  */
+            return (unsigned long)(500.0 * pow(1.15, server.maxmemory_eviction_tenacity - 10.0));
+        }
+
+        return ULONG_MAX;   /* No limit to eviction time */
+    }
+  ``` 
