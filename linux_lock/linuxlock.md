@@ -10,7 +10,7 @@ Linux中的spin_lock其实就是一个int类型的变量，使用CPU的原子指
 
 # 3、mutex（glibc版本为2.29）
 __pthread_mutex_s:  
-```c
+  ```c
 struct __pthread_mutex_s
 {
     int __lock __LOCK_ALIGNMENT;    //锁
@@ -40,11 +40,11 @@ struct __pthread_mutex_s
     #endif
     __PTHREAD_COMPAT_PADDING_END
 };
-```
-首先需要说明的是lock mutex并不是一定就会有用户态和内核态的切换（具体的实现再写），然后mutex的底层唤醒机制用的是futex。 
-__pthread_mutex_lock:  
-```c 
-int __pthread_mutex_lock (pthread_mutex_t *mutex)
+  ```  
+  首先需要说明的是lock mutex并不是一定就会有用户态和内核态的切换（具体的实现再写），然后mutex的底层唤醒机制用的是futex。 
+  PTHREAD_MUTEX_LOCK:    
+  ```c 
+int PTHREAD_MUTEX_LOCK(pthread_mutex_t *mutex)
 {
     //获取mutex的类型
     unsigned int type = PTHREAD_MUTEX_TYPE_ELISION (mutex);
@@ -92,13 +92,13 @@ int __pthread_mutex_lock (pthread_mutex_t *mutex)
 
     return 0;
 }
-```
-详细代码截图如下所示：  
-![mutex_lock](../linux_lock/picture/mutex_lock.jpg)  
-![lll_lock](../linux_lock/picture/lll_lock.jpeg)  
-__lll_lock_wait_private汇编代码中，当futex被唤醒后，还会有CAS操作来避免内核的虚假唤醒。
-__pthread_mutex_unlock:  
-```c 
+  ```  
+  详细代码截图如下所示：  
+  ![mutex_lock](../linux_lock/picture/mutex_lock.jpeg)    
+  ![__lll_lock_wait](../linux_lock/picture/__lll_lock_wait.png)  
+  __lll_lock_wait自旋操作，这么做的原因是futex可能会被虚假唤醒。   
+  __pthread_mutex_unlock:  
+  ```c 
 int
 attribute_hidden
 __pthread_mutex_unlock_usercnt (pthread_mutex_t *mutex, int decr)
@@ -151,11 +151,10 @@ __pthread_mutex_unlock_usercnt (pthread_mutex_t *mutex, int decr)
         ...
     }
 }
-```
-详细代码截图如下所示：  
-![mutex_unlock](../linux_lock/picture/mutex_unlock.jpeg)  
-![lll_unlock](../linux_lock/picture/lll_unlock.jpeg)  
-PTHREAD_MUTEX_TIMED_NP(默认类型)、PTHREAD_MUTEX_ADAPTIVE_NP在解锁的时候没有判断锁的持有线程是否为当前线程，所以需要注意加锁解锁相对应，也可以用PTHREAD_MUTEX_ERRORCHECK_NP，会做检查，只是性能稍差。
+  ```  
+  详细代码截图如下所示：  
+  ![mutex_unlock](../linux_lock/picture/mutex_unlock.jpeg)  
+  PTHREAD_MUTEX_TIMED_NP(默认类型)、PTHREAD_MUTEX_ADAPTIVE_NP在解锁的时候没有判断锁的持有线程是否为当前线程，所以需要注意加锁解锁相对应，也可以用PTHREAD_MUTEX_ERRORCHECK_NP，会做检查，只是性能稍差。
 
 # 4、条件变量
 ```c 
@@ -166,21 +165,23 @@ __pthread_cond_wait_common (pthread_cond_t *cond, pthread_mutex_t *mutex,
     //释放mutex
     ...
 
-    //调用futex(FUTEX_WAIT, …)
-    ...
+    while(1)
+    {
+        if (CAS(消耗信号))
+            break;
+        else
+            continue;
+
+        //调用futex(FUTEX_WAIT, …)
+        ...
+    }
+    
 
     //被唤醒后重新尝试获取mutex
     ...
 }
-```
-```c 
-int
-__pthread_cond_signal (pthread_cond_t *cond)
-{
-    //调用futex(FUTEX_WAKE, …)
-    ...
-}
-```
+```  
+  <font color= "#FF0000">条件变量在futex被唤醒后，有一个自旋操作，因此条件变量不会由于futex的原因导致虚假唤醒。但消耗信号到重新获取互斥锁这两步不是原子性的，这里会导致存在虚假唤醒的情况。</font>
 
 # 5、信号量
 new_sem:  
@@ -213,7 +214,7 @@ struct new_sem
 };
 ```  
 __new_sem_post:  
-```c 
+  ```c 
 int __new_sem_post (sem_t *sem)
 {
     struct new_sem *isem = (struct new_sem *) sem;
@@ -239,11 +240,11 @@ int __new_sem_post (sem_t *sem)
 
     return 0;
 }
-```  
-详细代码截图如下所示：  
-![sem_post](../linux_lock/picture/sem_post.jpeg)  
-__new_sem_wait:  
-```c 
+  ```  
+  详细代码截图如下所示：  
+  ![sem_post](../linux_lock/picture/sem_post.jpeg)    
+  __new_sem_wait:    
+  ```c 
 int
 __new_sem_wait (sem_t *sem)
 {
@@ -252,29 +253,33 @@ __new_sem_wait (sem_t *sem)
         return 0;
     else
     {
-        //如果data字段等于0，则调用futex wait，被唤醒后原子操作data字段做减1操作
-        if (data == 0)
+        for (;;)
         {
-            futex(wait);
-            cas(data -1);
-        }
-        //
-        else
-        {
-            cas(data-1);
+            //如果data字段等于0，则调用futex wait，被唤醒后原子操作data字段做减1操作，成功break，失败则继续
+            if (data == 0)
+            {
+                futex(wait);
+            }
+            else
+            {
+                if (cas(data-1))
+                {
+                    break;
+                }
+            }
         }
     }
 }
-```  
-详细代码截图如下所示：  
-![sem_wait](../linux_lock/picture/sem_wait.jpeg)  
-![sem_wait_fast](../linux_lock/picture/sem_wait_fast.jpeg)  
-![sem_wait_slow](../linux_lock/picture/sem_wait_slow.jpeg)  
-通过源码的注释也能知道当futex被唤醒后，还会有CAS操作来避免内核的虚假唤醒。
+  ```  
+  详细代码截图如下所示：  
+  ![sem_wait](../linux_lock/picture/sem_wait.jpeg)  
+  ![sem_wait_fast](../linux_lock/picture/sem_wait_fast.jpeg)    
+  ![sem_wait_slow](../linux_lock/picture/sem_wait_slow.jpeg)   
+  通过源码的注释也能知道当futex被唤醒后，还会有CAS操作来避免内核的虚假唤醒。
 
 # 6、三者比较
 + 1、关于条件变量的虚假唤醒  
   首先需要说明的是三种底层唤醒机制都是用的futex，但只有条件变量存在虚假唤醒。这是有两个方面导致的，条件变量的实现以及内核的原因，解释如下：  
   实现方面：futex唤醒和mutex加锁之间的竞态，上面代码中有介绍pthread_cond_wait内部的行为大致为：1、释放mutex。2、调用futex(FUTEX_WAIT, …)进入休眠。3、被pthread_cond_signal或pthread_cond_broadcast唤醒。4、重新尝试获取 mutex。由于步骤3和4不是原子的，多个被唤醒的线程可能会竞争mutex，导致一些线程在真正获取mutex之前再次进入等待。  
   内核方面：futex_wait()可能会被虚假唤醒（例如：信号、调度、内核 Bug 等因素）。  
-  而互斥锁和信号量不会因为Linux内核可能出现的spurious wakeup导致虚假唤醒，这是因为互斥锁和信号量futex被唤醒后，还会通过原子操作检查监控的值是否满足条件。
+  而互斥锁、条件变量、信号量都不会因为Linux内核可能出现的spurious wakeup导致虚假唤醒，这是因为互斥锁、条件变量、信号量futex被唤醒后，还会通过原子操作检查监控的值是否满足条件。但条件变量自身的实现机制还是会出现虚假唤醒。

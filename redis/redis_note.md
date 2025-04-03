@@ -281,19 +281,18 @@ static int isLargeElement(size_t sz, int fill) {
 struct dict {
     //字典key的类型，提供不同的hash算法、key的比较函数等
     dictType *type;
-    //
+    //两个桶的元素，第二个桶用来做rehash
     dictEntry **ht_table[2];
     //两个桶的元素数量
     unsigned long ht_used[2];
     //分步rehash到的下标
     long rehashidx;
-    //
+    //暂停rehash
     unsigned pauserehash : 15;
-    //
     unsigned useStoredKeyApi : 1; 
-    //
+    //两个桶的大小
     signed char ht_size_exp[2];
-    //
+    //关闭自动扩容
     int16_t pauseAutoResize;
     void *metadata[];
 };
@@ -309,6 +308,96 @@ struct dictEntry {
     struct dictEntry *next;
 };
 ```
++ updateDictResizePolicy:  
+```c
+//初始值为DICT_RESIZE_ENABLE
+//如果是在父进程，但此时有子进程，值为DICT_RESIZE_AVOID
+//如果是子进程，值为DICT_RESIZE_FORBID，子进程不允许扩容
+void updateDictResizePolicy(void) {
+    if (server.in_fork_child != CHILD_TYPE_NONE)
+        dictSetResizeEnabled(DICT_RESIZE_FORBID);
+    else if (hasActiveChildProcess())
+        dictSetResizeEnabled(DICT_RESIZE_AVOID);
+    else
+        dictSetResizeEnabled(DICT_RESIZE_ENABLE);
+}
+```
++ dictExpandIfNeeded，每次新增元素时检查是否需要扩容，如果不是空dict导致的扩容就会导致rehash。  
+```c
+int dictExpandIfNeeded(dict *d) {
+    //已经在rehash，直接返回
+    if (dictIsRehashing(d)) return DICT_OK;
+
+    //此时还是个空的dict，直接扩容到初始大小，DICT_HT_INITIAL_SIZE=4
+    if (DICTHT_SIZE(d->ht_size_exp[0]) == 0) {
+        dictExpand(d, DICT_HT_INITIAL_SIZE);
+        return DICT_OK;
+    }
+
+    //当DICT_RESIZE_ENABLE并且桶里的元素个数大于等于桶的大小
+    //当DICT_RESIZE_AVOID并且桶里的元素个数大于等于4倍桶的大小（dict_force_resize_ratio=4）
+    if ((dict_can_resize == DICT_RESIZE_ENABLE &&
+         d->ht_used[0] >= DICTHT_SIZE(d->ht_size_exp[0])) ||
+        (dict_can_resize != DICT_RESIZE_FORBID &&
+         d->ht_used[0] >= dict_force_resize_ratio * DICTHT_SIZE(d->ht_size_exp[0])))
+    {
+        if (dictTypeResizeAllowed(d, d->ht_used[0] + 1))
+            dictExpand(d, d->ht_used[0] + 1);
+        return DICT_OK;
+    }
+    return DICT_ERR;
+}
+```  
++ dictShrinkIfNeeded，每次删除元素时检查是否需要缩小
+```c
+int dictShrinkIfNeeded(dict *d) {
+    //正在rehash，直接返回
+    if (dictIsRehashing(d)) return DICT_OK;
+    
+    //本身已经够小，直接返回
+    if (DICTHT_SIZE(d->ht_size_exp[0]) <= DICT_HT_INITIAL_SIZE) return DICT_OK;
+
+    //HASHTABLE_MIN_FILL=8
+    //当DICT_RESIZE_ENABLE并且桶里的元素个数*8还是小于等于桶的大小时
+    //当DICT_RESIZE_AVOID并且桶里的元素个数*8*4还是小于等于桶的大小时
+    if ((dict_can_resize == DICT_RESIZE_ENABLE &&
+         d->ht_used[0] * HASHTABLE_MIN_FILL <= DICTHT_SIZE(d->ht_size_exp[0])) ||
+        (dict_can_resize != DICT_RESIZE_FORBID &&
+         d->ht_used[0] * HASHTABLE_MIN_FILL * dict_force_resize_ratio <= DICTHT_SIZE(d->ht_size_exp[0])))
+    {
+        if (dictTypeResizeAllowed(d, d->ht_used[0]))
+            dictShrink(d, d->ht_used[0]);
+        return DICT_OK;
+    }
+    return DICT_ERR;
+}
+``` 
++ rehash的推进规则：  
+  1、每次操作当前正在rehash的dict时，会推进一次rehash。  
+  2、在定时任务`databasesCron`中，会推进需要rehash的dict，每次最少100步。但每次推进rehash的时间不能超过1毫秒。伪代码如下所示：  
+  ```c
+  ...
+  
+  //INCREMENTAL_REHASHING_THRESHOLD_US=1000微秒
+  if (server.activerehashing) 
+  {
+    uint64_t elapsed_us = 0;
+    for (j = 0; j < dbs_per_call; j++) {
+        redisDb *db = &server.db[rehash_db % server.dbnum];
+        elapsed_us += kvstoreIncrementallyRehash(db->keys, INCREMENTAL_REHASHING_THRESHOLD_US - elapsed_us);
+        if (elapsed_us >= INCREMENTAL_REHASHING_THRESHOLD_US)
+            break;
+        elapsed_us += kvstoreIncrementallyRehash(db->expires, INCREMENTAL_REHASHING_THRESHOLD_US - elapsed_us);
+        if (elapsed_us >= INCREMENTAL_REHASHING_THRESHOLD_US)
+            break;
+        rehash_db++;
+    }
+  }
+  ...
+  ```  
+
++ 相关参数：
+  + `activerehashing`：默认开启，是否开启rehash。
 
 ## zskiplist
 + zskiplist相关结构体如下所示： 
@@ -324,8 +413,11 @@ typedef struct zskiplistNode {
 } zskiplistNode;
 
 typedef struct zskiplist {
+    //头节点和尾节点
     struct zskiplistNode *header, *tail;
+    //元素个数
     unsigned long length;
+    //
     int level;
 } zskiplist;
 ```
@@ -543,7 +635,7 @@ void setTypeMaybeConvert(robj *set, size_t size_hint) {
 ```
 
 ## Sorted Set
-+ Sorted Set类型的对象type=OBJ_ZSET，encoding=OBJ_ENCODING_SKIPLIST  
++ Sorted Set类型的对象type=OBJ_ZSET，而encoding字段可能是OBJ_ENCODING_LISTPACK或者OBJ_ENCODING_SKIPLIST。  
 
 ## Hash
 + Hash类型的对象type=OBJ_HASH，而encoding字段可能是OBJ_ENCODING_HT或者OBJ_ENCODING_LISTPACK。  
@@ -611,7 +703,6 @@ void hashTypeTryConversion(redisDb *db, robj *o, robj **argv, int start, int end
 + `rdb-del-sync-files`：从节点：当没有开启RDB和AOF持久化并且这个配置开启时，会删除全量同步时生成在磁盘的RDB文件。主节点：本次全量同步结束后，没有开启RDB和AOF持久化并且这个配置开启，并且此时没有需要全量同步的从节点时删除全量同步生成的RDB磁盘文件。
 + `repl-diskless-load`：从节点收到主节点的全量同步包时，是否保存到磁盘。`disabled`（保存到磁盘）、`swapdb`（不保存到磁盘）、`on-empty-db`（当本地是空数据库时不保存到磁盘）
 
-finishShutdown
 # 持久化
 + 1、AOF
   + 常用相关参数：
@@ -685,4 +776,19 @@ finishShutdown
 
         return ULONG_MAX;   /* No limit to eviction time */
     }
-  ``` 
+  ```  
+  + `replica-ignore-maxmemory`：从节点数据不做淘汰
+
+# 集群模式
++ 故障转移具体步骤：
++ 1、假设redis集群有三个主节点A、B、C，并且各自有三个从节点A1、A2、A3、B1、B2、B3、C1、C2、C3。
++ 2、当A节点宕机时，B和C在定时任务`clusterCron`中，判断超时则会将各自本地记录的A节点状态设置为PFAIL（代码1）。
++ 3、然后同样在定时任务`clusterCron`中，两个主节点可能会给对方发送PING消息（代码2）。
++ 4、假设是B给C发，当C收到消息后发现B节点所记录的A节点也变成了PFAIL，那么此时C节点中所记录认为A节点主观下线的主节点个数已经满足故障转移的条件（2 >= (3 / 2) + 1），C节点会广播一条`CLUSTERMSG_TYPE_FAIL`类型的消息给所有节点（代码3）。
++ 5、当A的从节点在`clusterCron`中，发现自己的主节点发生故障，则广播一条`CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST`类型的消息给所有节点（代码4）。
++ 6、其他主节点收到`CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST`消息后，对其进行投票，如果投给某个从节点，就给该从节点发送`CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK`类型的消息（代码5）。
++ 7、A的从节点收到`CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK`类型的消息后，增加自己集群对象`failover_auth_count`字段的值（代码6）。
++ 8、当A的从节点在`clusterCron`中，如果投给本节点达到一定数量后，该节点切换成主节点（代码7）。
+
++ 相关参数：
+cluster-node-timeout
