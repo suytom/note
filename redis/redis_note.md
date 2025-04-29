@@ -224,11 +224,11 @@ typedef struct quicklist {
     quicklistBookmark bookmarks[];
 } quicklist;
 ```
-+ quicklist的fill字段限制每个节点的最大容量，默认值为-2，可以通过list_max_listpack_size配置参数设置。  
++ quicklist的fill字段限制每个节点的最大容量，默认值为-2，可以通过`list_max_listpack_size`配置参数设置。  
   当fill小于0时，该字段表示每个listpack节点的最大字节数。各个节点大小对应static const size_t optimization_level[] = {4096, 8192, 16384, 32768, 65536}。
   当fill大于等于0时，该字段表示每个listpack节点的元素个数，而且每个节点的最大字节数等于SIZE_SAFETY_LIMIT=8KB。
 
-+ quicklist的compress字段表示头尾各有多少个节点不压缩。可以通过list_compress_depth配置参数设置。默认值为0，表示所有节点都不压缩。
++ quicklist的compress字段表示头尾各有多少个节点不压缩。可以通过`list_compress_depth`配置参数设置。默认值为0，表示所有节点都不压缩。
 
 + quicklistPushTail:
 ```c
@@ -460,7 +460,7 @@ struct redisObject {
 # redis数据类型
 
 ## String
-+ String类型的对象type=OBJ_STRING，而encoding字段可能是OBJ_ENCODING_INT、OBJ_ENCODING_EMBSTR或者OBJ_ENCODING_RAW。  
++ String类型的对象type=`OBJ_STRING`，而encoding字段可能是`OBJ_ENCODING_INT`、`OBJ_ENCODING_EMBSTR`或者`OBJ_ENCODING_RAW`。  
   tryObjectEncodingEx源码如下所示：  
 ```c
 robj *tryObjectEncodingEx(robj *o, int try_trim) {
@@ -523,8 +523,8 @@ robj *tryObjectEncodingEx(robj *o, int try_trim) {
 ```
 
 ## List
-+ List类型的对象type=OBJ_LIST，而encoding字段可能是OBJ_ENCODING_QUICKLIST或者OBJ_ENCODING_LISTPACK。  
-  当新创建一个List类型的对象时，encoding字段初始值是OBJ_ENCODING_LISTPACK。  
++ List类型的对象type=`OBJ_LIST`，而encoding字段可能是`OBJ_ENCODING_QUICKLIST`或者`OBJ_ENCODING_LISTPACK`。  
+  当新创建一个List类型的对象时，encoding字段初始值是`OBJ_ENCODING_LISTPACK`。  
 
 +  listTypeTryConvertListpack源码如下所示：  
 ```c
@@ -564,7 +564,7 @@ static void listTypeTryConvertListpack(robj *o, robj **argv, int start, int end,
     }
 }
 ```  
-  list_max_listpack_size在上面有做记录。  
+  `list_max_listpack_size`在上面有做记录。  
 
 + listTypeTryConvertQuicklist源码如下所示：  
 ```c
@@ -602,7 +602,7 @@ static void listTypeTryConvertQuicklist(robj *o, int shrinking, beforeConvertCB 
   当删除List中的元素时，会调用listTypeTryConvertQuicklist。  
 
 ## Set
-+ Set类型的对象type=OBJ_SET，而encoding字段可能是OBJ_ENCODING_INTSET、OBJ_ENCODING_LISTPACK或者OBJ_ENCODING_HT  
++ Set类型的对象type=`OBJ_SET`，而encoding字段可能是`OBJ_ENCODING_INTSET`、`OBJ_ENCODING_LISTPACK`或者`OBJ_ENCODING_HT`  
 
 + setTypeCreate源码如下所示：  
 ```c
@@ -635,11 +635,11 @@ void setTypeMaybeConvert(robj *set, size_t size_hint) {
 ```
 
 ## Sorted Set
-+ Sorted Set类型的对象type=OBJ_ZSET，而encoding字段可能是OBJ_ENCODING_LISTPACK或者OBJ_ENCODING_SKIPLIST。  
++ Sorted Set类型的对象type=`OBJ_ZSET`，而encoding字段可能是`OBJ_ENCODING_LISTPACK`或者`OBJ_ENCODING_SKIPLIST`。  
 
 ## Hash
-+ Hash类型的对象type=OBJ_HASH，而encoding字段可能是OBJ_ENCODING_HT或者OBJ_ENCODING_LISTPACK。  
-  当新创建一个Hash类型的对象时，encoding字段初始值是OBJ_ENCODING_LISTPACK。  
++ Hash类型的对象type=`OBJ_HASH`，而encoding字段可能是`OBJ_ENCODING_HT`或者`OBJ_ENCODING_LISTPACK`。  
+  当新创建一个Hash类型的对象时，encoding字段初始值是`OBJ_ENCODING_LISTPACK`。  
 
 + hashTypeTryConversion源码如下所示：  
 ```c
@@ -730,7 +730,8 @@ void hashTypeTryConversion(redisDb *db, robj *o, robj **argv, int start, int end
     
   + redis的rdb触发配置保存在redisServer的saveparams，存在默认参数，当redis.conf里没有配置save时，redis默认1分钟内10000修改或者5分钟内100次修改或者1小时内1次修改也会保存数据到磁盘（代码截图如下所示）。如果要关闭需要在配置文件中配置`save ""`，这样会清空saveparams。
   ![save_param](../redis/picture/save_param.jpeg)  
-  + 在redis.conf里配置了`save ""`，也并不能避免任何时刻都能阻止生成RDB文件。`save ""`只是关闭了redis运行中自动触发的RDB持久化机制。当用SIGINT或者SIGTERM信号或者远端用`shutdown save`命令来关闭redis服务，redis进程退出时也会保存RDB数据到磁盘。redis.conf里有两个默认关闭的配置`shutdown-on-sigint default`和`shutdown-on-sigterm default`，表示用SIGINT或者SIGTERM信号来关闭redis服务时是否保存RDB文件。  
+  + 在redis.conf里配置了`save ""`，也并不能避免任何时刻都能阻止生成RDB文件。`save ""`只是关闭了redis运行中自动触发的RDB持久化机制。当用SIGINT或者SIGTERM信号或者远端用`shutdown save`命令来关闭redis服务，redis进程退出时也会保存RDB数据到磁盘。  
+  redis.conf里有两个默认关闭的配置`shutdown-on-sigint default`和`shutdown-on-sigterm default`，表示用SIGINT或者SIGTERM信号来关闭redis服务时是否保存RDB文件。  
 
 + <font color= "#6F006F">需要注意的是，如果一开始只开启了RDB，运行Redis一段时间后关闭，然后手动修改redis.conf配置开启AOF，启动Redis此时不会有数据。</font>Redis启动加载数据伪代码如下所示：
   ```c
@@ -780,15 +781,15 @@ void hashTypeTryConversion(redisDb *db, robj *o, robj **argv, int start, int end
   + `replica-ignore-maxmemory`：从节点数据不做淘汰
 
 # 集群模式
-+ 故障转移具体步骤：
-+ 1、假设redis集群有三个主节点A、B、C，并且各自有三个从节点A1、A2、A3、B1、B2、B3、C1、C2、C3。
-+ 2、当A节点宕机时，B和C在定时任务`clusterCron`中，判断超时则会将各自本地记录的A节点状态设置为PFAIL（代码1）。
-+ 3、然后同样在定时任务`clusterCron`中，两个主节点可能会给对方发送PING消息（代码2）。
-+ 4、假设是B给C发，当C收到消息后发现B节点所记录的A节点也变成了PFAIL，那么此时C节点中所记录认为A节点主观下线的主节点个数已经满足故障转移的条件（2 >= (3 / 2) + 1），C节点会广播一条`CLUSTERMSG_TYPE_FAIL`类型的消息给所有节点（代码3）。
-+ 5、当A的从节点在`clusterCron`中，发现自己的主节点发生故障，则广播一条`CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST`类型的消息给所有节点（代码4）。
-+ 6、其他主节点收到`CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST`消息后，对其进行投票，如果投给某个从节点，就给该从节点发送`CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK`类型的消息（代码5）。
-+ 7、A的从节点收到`CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK`类型的消息后，增加自己集群对象`failover_auth_count`字段的值（代码6）。
-+ 8、当A的从节点在`clusterCron`中，如果投给本节点达到一定数量后，该节点切换成主节点（代码7）。
++ 故障转移具体步骤：  
+  + 1、假设redis集群有三个主节点A、B、C，并且各自有三个从节点A1、A2、A3、B1、B2、B3、C1、C2、C3。
+  + 2、当A节点宕机时，B和C在定时任务`clusterCron`中，判断超时则会将各自本地记录的A节点状态设置为PFAIL（代码1）。
+  + 3、然后同样在定时任务`clusterCron`中，两个主节点可能会给对方发送PING消息（代码2）。
+  + 4、假设是B给C发，当C收到消息后发现B节点所记录的A节点也变成了PFAIL，那么此时C节点中所记录认为A节点主观下线的主节点个数已经满足故障转移的条件（2 >= (3 / 2) + 1），C节点会广播一条`CLUSTERMSG_TYPE_FAIL`类型的消息给所有节点（代码3）。
+  + 5、当A的从节点在`clusterCron`中，发现自己的主节点发生故障，则广播一条`CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST`类型的消息给所有节点（代码4）。
+  + 6、其他主节点收到`CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST`消息后，对其进行投票，如果投给某个从节点，就给该从节点发送`CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK`类型的消息（代码5）。
+  + 7、A的从节点收到`CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK`类型的消息后，增加自己集群对象`failover_auth_count`字段的值（代码6）。
+  + 8、当A的从节点在`clusterCron`中，如果投给本节点达到一定数量后，该节点切换成主节点（代码7）。
 
 + 相关参数：
-cluster-node-timeout
+`cluster-node-timeout`
