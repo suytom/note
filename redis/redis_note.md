@@ -680,28 +680,93 @@ void hashTypeTryConversion(redisDb *db, robj *o, robj **argv, int start, int end
 ```
 
 # 全量同步和增量同步
+  从节点进程起来后在定时事件回调函数serverCron中调用replicationCron，如果有配置主节点信息，则调用connectWithMaster，主动连接主节点，此时这个连接的read回调函数是syncWithMaster。当主节点数据来了，在函数syncWithMaster中判断是全量同步还是增量同步，如果是增量同步，则将该socket的read回调函数设置为readQueryFromClient。如果是全量同步，回调函数设置为readSyncBulkPayload。当全量同步完成，回调函数又重新被设置为readQueryFromClient。
+
 1、从节点（replica）在与主节点（master）建立复制连接时，会发送`PSYNC`命令，如果有之前的master的信息则会把之前master的`replication id`和`replication offset`带上。  
 2、主节点收到`PSYNC`命令后，比较`replication id`和`offset`，如果满足条件则进行增量同步，否则就需要全量同步。  
-3、如果是增量同步，主节点将`repl_backlog`中需要同步给从节点的数据保存在`client`的相关字段。然后在事件循环中，真正的将对应数据发送给从节点。  
+3、如果是增量同步，主节点先发送一条`CONTINUE`命令，然后将`repl_backlog`中需要同步给从节点的数据保存在`client`的相关字段。然后在事主线程循环中调用handleClientsWithPendingWrites，真正的将对应数据发送给从节点。  
 4、如果是全量同步：
-+ 首先检查是否已经有一个`CHILD_TYPE_RDB`子进程正在给其他从节点进行全量同步。
-  + 如果当前`rdb_child_type == RDB_CHILD_TYPE_SOCKET`，这个从节点的全量同步不会有其他操作，结束后父进程将RDB数据发给所有满足条件的需要全量同步的从节点。
-  + 如果当前`rdb_child_type == RDB_CHILD_TYPE_DISK`，这个从节点的全量同步不会有其他操作，主节点在事件循环中会去检查子进程是否已经结束，子进程结束后将RDB数据发送给发给所有满足条件的需要全量同步的从节点。
++ 首先检查是否已经有一个`CHILD_TYPE_RDB`子进程。BGSAVE子进程。
+  + 如果当前`rdb_child_type == RDB_CHILD_TYPE_DISK`，遍历所有client，查看是否有其他同样正在等待全量同步且满足相应条件的client，如果有则将client的状态改为SLAVE_STATE_WAIT_BGSAVE_END，后续在周期函数replicationCron()中处理。
+  + 如果当前`rdb_child_type == RDB_CHILD_TYPE_SOCKET`，直接返回，此时client的状态为SLAVE_STATE_WAIT_BGSAVE_START,后续在周期函数replicationCron()中处理。
 + 如果当前没有相关子进程
   + 如果`repl_diskless_sync`和`repl_diskless_sync_delay`都设置，那么本次全量同步不会立即处理，而是等待`repl_diskless_sync_delay`，单位是秒。
   + 如果开启`repl_diskless_sync`，首先遍历所有从节点信息，找到需要全量同步的从节点，然后开启一个`CHILD_TYPE_RDB`子进程，子进程生成RDB数据，通过`pipe`发给父进程，结束后父进程将RDB数据发给所有需要全量同步的从节点。（`rdbSaveToSlavesSockets`函数）
   + 如果没开启`repl_diskless_sync`，开启一个`CHILD_TYPE_RDB`子进程，子进程生成RDB数据，并保存在磁盘。父进程在`serverCron`中调用`checkChildrenDone`，`checkChildrenDone`的作用是检查子进程是否完成，完成则将RDB文件发给所有需要全量同步的从节点。
-+ 主节点在循环中，如果此时有需要全量同步的，主节点又会开始上面所述的全量同步步骤。
-5、从节点收到数据包后，在`slaveTryPartialResynchronization`中判断主节点发过来的是全量同步还是增量同步。如果是全量同步不在这里面处理。
-6、如果是增量同步
+主节点相关伪代码如下所示：
+```c
+void syncCommand(client *c)
+{
+    if （比较client psync带过来的参数replication id和replication offset，如果满足提交则进行增量同步）
+    {
+        增量同步：
+            在masterTryPartialResynchronization函数中，先给client发一条CONTINUE消息，然后将需要同步的数据保存到client相关字段。
+            然后在主线程循环中调用handleClientsWithPendingWrites将数据发给client。
+    }
+    else
+    {
+        全量同步：
+            if （此时有一个子进程，并且是在执行bgsave，将数据保存到磁盘）
+            {
+                遍历所有client，查看是否有其他同样正在等待全量同步且满足相应条件的client，如果有则将client的状态改为SLAVE_STATE_WAIT_BGSAVE_END，后续在周期函数replicationCron()中处理
+            }
+            else if （此时有一个直接将RDB数据通过socket发给client的子进程）
+            {
+                直接返回，此时client的状态为SLAVE_STATE_WAIT_BGSAVE_START,后续在周期函数replicationCron()中处理
+            }
+            else
+            {
+                if (repl_diskless_sync和repl_diskless_sync_delay都配置)
+                {
+                    直接返回，此时client的状态为SLAVE_STATE_WAIT_BGSAVE_START,后续在周期函数replicationCron()中处理
+                }
+                else
+                {
+                    if （没有子进程）
+                    {
+                        调用startBgsaveForReplication()函数
+                    }
+                    else
+                    {
+                        直接返回，此时client的状态为SLAVE_STATE_WAIT_BGSAVE_START,周期函数replicationCron()中处理
+                    }
+                }
+            }
+    }
+}
+
+int startBgsaveForReplication(int mincapa, int req) 
+{
+    if (repl_diskless_sync == true)
+    {
+        1、创建一个匿名管道
+        2、创建一个子进程
+            2.1、子进程生成RDB数据，并通关管道通知父进程
+            2.2、父进程在rdbPipeReadHandler函数中，从管道读数据，并发送给client
+    }
+    else
+    {
+        1、创建一个子进程，生成RDB数据，并保存在磁盘
+        2、父进程在定时事件回调函数serverCron中，调用checkChildrenDone检查子进程是否结束，如果子进程结束，则将数据发送给状态为SLAVE_STATE_WAIT_BGSAVE_END的client
+    }
+}
+
+void replicationCron(void)
+{
+    如果有满足条件的client，调用startBgsaveForReplication()
+    if (shouldStartChildReplication(&mincapa, &req)) {
+        startBgsaveForReplication(mincapa, req);
+    }
+}
+```  
 
 常用相关参数：
-+ `repl-diskless-sync`：主节点全量同步的RDB数据是否保存到磁盘。
-+ `repl-diskless-sync-delay`：主节点全量同步延迟，等待更多的全量同步需求。
-+ `repl-diskless-sync-max-replicas`：主节点最大同时需要全量同步的从节点数量。
-+ `repl-backlog-size`：
-+ `rdb-del-sync-files`：从节点：当没有开启RDB和AOF持久化并且这个配置开启时，会删除全量同步时生成在磁盘的RDB文件。主节点：本次全量同步结束后，没有开启RDB和AOF持久化并且这个配置开启，并且此时没有需要全量同步的从节点时删除全量同步生成的RDB磁盘文件。
-+ `repl-diskless-load`：从节点收到主节点的全量同步包时，是否保存到磁盘。`disabled`（保存到磁盘）、`swapdb`（不保存到磁盘）、`on-empty-db`（当本地是空数据库时不保存到磁盘）
++ `repl_diskless_sync`：主节点做全量同步时，是否直接将数据通过socket发送给从节点，而不落盘保存到磁盘。
++ `repl_diskless_sync_delay`：主节点全量同步延迟，等待更多的全量同步需求。
++ `repl_diskless_sync_max_replicas`：最大同时需要全量同步的从节点数量。等待全量同步的从节点超过这个数，则直接执行startBgsaveForReplication，否则要等`repl_diskless_sync_delay`的时间到。
++ `repl_backlog_size`：
++ `rdb_del_sync_files`：从节点：当没有开启RDB和AOF持久化并且这个配置开启时，会删除全量同步时生成在磁盘的RDB文件。主节点：本次全量同步结束后，没有开启RDB和AOF持久化并且这个配置开启，并且此时没有需要全量同步的从节点时删除全量同步生成的RDB磁盘文件。
++ `repl_diskless_load`：从节点收到主节点的全量同步包时，是否保存到磁盘。`disabled`（保存到磁盘）、`swapdb`（不保存到磁盘）、`on-empty-db`（当本地是空数据库时不保存到磁盘）
 
 # 持久化
 + 1、AOF
@@ -733,7 +798,7 @@ void hashTypeTryConversion(redisDb *db, robj *o, robj **argv, int start, int end
   + 在redis.conf里配置了`save ""`，也并不能避免任何时刻都能阻止生成RDB文件。`save ""`只是关闭了redis运行中自动触发的RDB持久化机制。当用SIGINT或者SIGTERM信号或者远端用`shutdown save`命令来关闭redis服务，redis进程退出时也会保存RDB数据到磁盘。  
   redis.conf里有两个默认关闭的配置`shutdown-on-sigint default`和`shutdown-on-sigterm default`，表示用SIGINT或者SIGTERM信号来关闭redis服务时是否保存RDB文件。  
 
-+ <font color= "#6F006F">需要注意的是，如果一开始只开启了RDB，运行Redis一段时间后关闭，然后手动修改redis.conf配置开启AOF，启动Redis此时不会有数据。</font>Redis启动加载数据伪代码如下所示：
++ Redis启动加载数据伪代码如下所示：
   ```c
   void loadDataFromDisk(void) 
   {
@@ -792,4 +857,5 @@ void hashTypeTryConversion(redisDb *db, robj *o, robj **argv, int start, int end
   + 8、当A的从节点在`clusterCron`中，如果投给本节点达到一定数量后，该节点切换成主节点（代码7）。
 
 + 相关参数：
-`cluster-node-timeout`
+  + `cluster-enabled`：是否是集群模式。  
+  + `cluster-node-timeout`：集群节点超时时间。  

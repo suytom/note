@@ -2,20 +2,25 @@
 + `COUNT(*) on a single table without a WHERE is retrieved directly from the table information for MyISAM and MEMORY tables. This is also done for any NOT NULL expression when used with only one table.`  
   也就是说如果存储引擎是MyISAM或者MEMORY的话，表的数据行数会保存在表信息中（SHOW TABLE STATUS LIKE '表名';）。InnoDB因为支持事务的原因，则不会有这个信息。
 
-+ `If you use the SQL_SMALL_RESULT modifier, MySQL uses an in-memory temporary table.`  
-  优化提示，告诉MySQL这个查询的结果集会很小，建议使用内存临时表。  
-  在执行某些SQL查询（如 GROUP BY、DISTINCT、ORDER BY、UNION等）时，MySQL可能会创建临时表来存储中间计算结果，以便提高查询效率。  
-  explain时Extra列中如果出现Using temporary，则表示使用了临时表，```sql SHOW GLOBAL STATUS LIKE 'Created_tmp%tables'; ```Created_tmp_tables：创建的内存临时表数量。Created_tmp_disk_tables：创建的磁盘临时表数量。  
-  影响使用内存临时表的参数:  
-  1、`tmp_table_size` 和 `max_heap_table_size`  
-  如果临时表的大小超过tmp_table_size或max_heap_table_size的较小值，MySQL会将其转换为磁盘临时表。  
-  2、`max_tmp_tables`  
-  单个会话可创建的内存临时表数量。  
-  3、`min_examined_row_limit`  
-  最少需要存入临时表的行数，如果GROUP BY、DISTINCT或ORDER BY结果的行数少于`min_examined_row_limit`，MySQL可能不会创建临时表。  
-  4、TEXT和BLOB类型  
-  MEMORY存储引擎不支持TEXT/BLOB，如果查询包含这些数据类型，MySQL只能使用磁盘临时表。  
++ 临时表
+  + 文档目录地址：https://dev.mysql.com/doc/refman/8.4/en/internal-temporary-tables.html
+  + 在执行某些SQL查询（如 GROUP BY、DISTINCT、ORDER BY、UNION等）时，MySQL可能会创建临时表来存储中间计算结果，以便提高查询效率。  
+  explain时Extra列中如果出现Using temporary，则表示使用了临时表，```sql SHOW GLOBAL STATUS LIKE 'Created_tmp%tables'; ```Created_tmp_tables：创建的内存临时表数量。Created_tmp_disk_tables：创建的磁盘临时表数量。
+  + 以下情况MySQL会使用磁盘临时表，而非内存临时表：
+    + 当内存临时表的存储引擎为memory的时候，如果查询的字段中有TEXT或者BLOB数据类型。
+    + 当执行select查询时，如果字段中包含字符串类型，其最大长度超过512，并且使用了UNION或UNION ALL，就会使用磁盘临时表。
+    + 内存临时表大小超过限制。
+  + 配置表字段：
+    + `internal_tmp_mem_storage_engine`：内存临时表使用的存储引擎，`TempTable`或者`MEMORY`，默认值是`TempTable`。
+    + `tmp_table_size`：单个内存临时表最大大小，默认值是16M。超过这个值会退化为磁盘临时表。
+    + `temptable_max_ram`：temptable存储引擎专属配置字段，所有内存临时表加起来的最大大小，超过这个值会退化为磁盘临时表。
+    + `temptable_use_mmap`：temptable存储引擎专属配置字段，内存临时表超过`temptable_max_ram`的限制时，是否使用内存映射文件。默认是关闭。
+    + `temptable_max_mmap`：temptable存储引擎专属配置字段，内存映射文件最大大小。
+    + `max_heap_table_size`：当内存临时表的存储引擎为memory时，和`tmp_table_size`的最小值决定内存临时表的最大大小。
 
++ Redo Log
+  
+  
 + By default, MySQL employs hash joins whenever possible. It is possible to control whether hash joins are employed using one of the BNL and NO_BNL optimizer hints.  
   Memory usage by hash joins can be controlled using the join_buffer_size system variable; a hash join cannot use more memory than this amount. When the memory required for a hash join exceeds the amount available, MySQL handles this by using files on disk. If this happens, you should be aware that the join may not succeed if a hash join cannot fit into memory and it creates more files than set for open_files_limit. To avoid such problems, make either of the following changes:  
     Increase join_buffer_size so that the hash join does not spill over to disk.  
