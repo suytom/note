@@ -140,6 +140,7 @@ void write_io_uring(const char *filename, int writeSize) {
   
 + 结论：  
   在未挂载IO Scheduler的SSD上，理论上O_DIRECT具有更高的写入性能上限，因为它绕过了内核的page cache，避免了缓存一致性与额外拷贝的开销。但同时也要求user自己管理数据缓存和刷盘逻辑。如果user未实现缓存机制，仅以有多少数据就写多少的方式使用O_DIRECT，写入粒度较小或不连续，反而可能不如Buffer io。Buffer IO可能会合并相邻的页，使block layer能构建更少的request，从而减少IOPS消耗、提升写入效率。
+  <font color= "#FF0000">使用Nvem协议的SSD，推荐是不挂载IO Schedule，因为它支持多处理队列，而且SSD对于顺序读写和随机读写性能差异不大，挂载IO Schedule反而可能会降低读写能力。</font>
 
 # io_uring_setup() flags
 + IORING_SETUP_IOPOLL  
@@ -152,7 +153,7 @@ void write_io_uring(const char *filename, int writeSize) {
   用于配合IORING_SETUP_SQPOLL，将内核轮询线程绑定到指定CPU上运行。  
 
 + IORING_SETUP_ATTACH_WQ  
-  允许同一进程内的多个io_uring实例共享同一个io_wq线程池，从而降低内核线程资源消耗，提升资源利用率。  
+  允许同一进程内的多个io_uring实例共享同一个io_wq线程池，从而降低内核线程资源消耗，提升资源利用率。默认情况下每个io_uring实例有各自独立的io_wq线程池。  
 
 + IORING_SETUP_R_DISABLED  
   创建io_uring时，初始状态下SQ是“不可用”的，需要显式调用io_uring_register_ring_fd(IORING_REGISTER_ENABLE_RINGS)才能启用。  

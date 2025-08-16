@@ -92,14 +92,14 @@
 	return lp;
   }
   ```  
-  <font color= "#FF0000">默认栈大小为128K，大抵是因为glibc初始的brk\mmap阈值是128K（可能会被动态调整，调用mallopt设置阈值或者其他的一些东西的时候会把动态调整关闭，32位的最大阈值是512K，64位最大是32M，ptmalloc里再做记录），这能避免内存碎片。但如果是共享栈的时候，每次做协程切换的时候，原来协程的栈的内容每次都会申请内存来保存，这个大小又没按这个阈值来，有点奇怪。save_stack_buffer代码截图如下所示：</font>  
+  <font color= "#CC5500">默认栈大小为128K，大抵是因为glibc初始的brk\mmap阈值是128K（可能会被动态调整，调用mallopt设置阈值或者其他的一些东西的时候会把动态调整关闭，32位的最大阈值是512K，64位最大是32M，ptmalloc里再做记录），这能避免内存碎片。但如果是共享栈的时候，每次做协程切换的时候，原来协程的栈的内容每次都会申请内存来保存，这个大小又没按这个阈值来，有点奇怪。save_stack_buffer代码截图如下所示：</font>  
   ![save_stack_buffer](../libco/picture/save_stack_buffer.png)
 
 + co_resume：  
   ![co_resume](../libco/picture/co_resume.png)  
 + coctx_make:  
   ![coctx_make](../libco/picture/coctx_make.png)  
-  <font color= "#FF0000">之所以要做16个字节对齐，是因为gcc现在默认堆栈对齐到16个字节，一些SSE指令如果没有做16个字节对齐会发生段错误。</font>资料地址：https://sourceforge.net/p/fbc/bugs/659/，测试结果如下图所示：  
+  <font color= "#CC5500">之所以要做16个字节对齐，是因为gcc现在默认堆栈对齐到16个字节，一些SSE指令如果没有做16个字节对齐会发生段错误。</font>资料地址：https://sourceforge.net/p/fbc/bugs/659/，测试结果如下图所示：  
   ![stack_aligned](../libco/picture/stack_aligned.png)
 + coctx_swap:  
   ```S  

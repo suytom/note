@@ -830,11 +830,10 @@ void luaC_step (lua_State *L) {
 ### 3、lua脚本调用
   在lua中调用collectgarbage("collect")，执行的是上面所记录的luaC_fullgc函数，会阻塞执行完所有步骤，直到gcstate再次处于GCSpause阶段。
 
-
 ## D、热更
 + 跟热更相关的表：  
-  loaded表，l_registry表的key为LUA_LOADED_TABLE（_LOADED）。  
-  searchers表，l_registry表的key为searchers。  
+  + loaded表，l_registry表的key为LUA_LOADED_TABLE（_LOADED）。  
+  + searchers表，l_registry表的key为searchers。  
 
 + require相关伪代码如下所示：  
 ```c
