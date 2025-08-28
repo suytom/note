@@ -10,14 +10,14 @@
 
 # Network I/O
   系统初始化时，NIC驱动会通过DMA机制为NIC分配一块主内存区域，并将其映射到设备上，使NIC能够直接读写主内存中的数据。  
-  当网络数据包到达时，NIC首先将数据写入其内部缓冲区。随后，NIC将数据直接DMA到之前映射好的主内存。一旦DMA传输完成，NIC驱动将通过中断或轮询机制通知内核协议栈，数据随后会被协议栈解析和处理，最终拷贝到对应 socket的接收缓冲区中，供用户空间读取。  
-  当发送网络数据包时，首先从user memory memecpy到socket的send buffer，然后立马被协议栈处理（未开启纳格算法或者数据包大小超过MSS），NIC驱动将该数据包挂入TX ring buffer，配置好DMA映射后，由NIC发起DMA，从主内存读取数据并将其发送到网卡接口上。  
+  当网络数据包到达时，NIC首先将数据写入其内部缓冲区。随后，NIC将数据直接DMA到之前映射好的主内存RX ring buffer。一旦DMA传输完成，NIC驱动将通过中断或轮询机制通知内核协议栈，数据随后会被协议栈解析和处理，最终拷贝到对应 socket的接收缓冲区中，供用户空间读取。  
+  当发送网络数据包时，首先从user memory memecpy到socket的send buffer，然后立马被协议栈处理，NIC驱动将该数据包挂入TX ring buffer，配置好DMA映射后，由NIC发起DMA，从主内存读取数据并将其发送到网卡接口上。  
   NIC的RX和TX操作都依赖主内存进行DMA，NIC本身的硬件缓冲主要用于RX临时缓存，TX几乎完全绕过NIC内存，直接从主内存拉数据发送。
 
 # 为什么要用io_uring？
-  1、io_uring初始化时，内核分配并映射共享内存用于SQ Ring和CQ Ring，user构建和提交SQE时通常不需要系统调用（尤其在SQPOLL模式下）。  
+  1、io_uring初始化时，内核分配并映射共享内存用于SQ Ring和CQ Ring，user构建和提交SQE时通常不需要或减少系统调用（尤其在SQPOLL模式下）。  
   2、对于no buffer io，可以register buffer，避免反复的pin/unpin页面。  
-  3、通过register files，可以减少系统调用开销，加速内核fd解析过程，较少锁竞争，从而提升性能。
+  3、通过register files，可以减少系统调用开销，加速内核fd解析过程，减少锁竞争，从而提升性能。
 
 # 写入性能测试
   块设备型号为：PC SN810 NVMe WDC 1024GB，该型号性能基准测试顺序写入峰值性能为5000M/S，block layer构建的request最大为512KB，接口是PCIe 4.0 ×4，并且该块设备没有挂载IO Scheduler（对于使用NVMe协议的SSD推荐不挂载IO Scheduler），并且没有开启合并bio。  

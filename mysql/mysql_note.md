@@ -32,7 +32,7 @@
 + Innodb Buffer Pool  
   + 文档目录地址：https://dev.mysql.com/doc/refman/8.4/en/innodb-buffer-pool.html
   + `On dedicated servers, up to 80% of physical memory is often assigned to the buffer pool.`专属服务器上，推荐百分之八十以上内存当作buff pool。
-  + 配置字段：  
+  + 部分配置字段：  
     + `innodb_buffer_pool_size`：Buff Pool大小，默认大小128M。If the server is started with --innodb-dedicated-server, the value of innodb_buffer_pool_size is set automatically if it is not explicitly defined。
     + `innodb_buffer_pool_chunk_size`：每个chunk的大小，Buffer Pool是由若干chunk组成的。
     + `innodb_buffer_pool_instances`：将InnoDB缓冲池划分为几个实例，每个instance有独立的缓存页链表和LRU。页号跟instance所对应，多个instance能够提升并发性能。过多也会造成内存浪费。
@@ -42,7 +42,7 @@
 
 + Linear Read Ahead和Random Read Ahead  
   + 线性预读和随机预读，InnoDB默认只使用线性预读机制。
-  + 配置字段：
+  + 部分配置字段：
     + `innodb_read_ahead_threshold`：取值范围0-64，这个单位是MySQL页的单位（MySQL的页默认大小为16K），一个extent有64个页。当一个extent已经被加载到缓存中的页的数量达到限制时，会触发线性预读，加载下一整个extent到buff pool中。  
     PS：linux虚拟内存管理的基本单位是页，一般大小为4K。文件管理系统的基本单位是块，通常块和页的大小相等。扇区是磁盘的基本单位，块对应多个扇区。虽然SSD在物理设备中不存在扇区的概念，但为了兼容传统设备接口，在逻辑层依然维护扇区的抽象。
     + `innodb_random_read_ahead`：是否开启随机预读，如果一个extent中的连续13个页都被加载到buff pool中，会触发随机预读，将这个extent的所有页都加载到buff pool中。默认是关闭的。
@@ -52,7 +52,7 @@
     + `Innodb_buffer_pool_read_ahead_rnd`：通过随机预读机制加载到Buffer Pool中，被访问前就被淘汰的数据页数量。
 
 + Buffer Pool刷盘
-  + 配置字段：
+  + 部分配置字段：
     + `innodb_page_cleaners`：脏页清理线程，默认值是Buffer Pool实例的个数。逻辑扫描和准备脏页，实际IO操作由write io thread处理。
     + `innodb_read_io_threads`：read io thread数量。
     + `innodb_write_io_threads`：write io thread数量。
@@ -61,7 +61,7 @@
     + `innodb_flush_neighbors`：是否将同一个extent的其他脏页都刷新到磁盘。默认值是0，不刷新。值为1时，将同一extent的相邻脏页刷新到磁盘。值为2时，将同一extent的其他脏页都刷新到磁盘。
     + `innodb_lru_scan_depth`：每次扫描的深度，从LRU列表尾部开始，干净的就淘汰，脏页就假如列表等待刷盘。默认值为1024。
   + 自适应刷新：
-    + 配置字段：
+    + 部分配置字段：
       + `innodb_adaptive_flushing`：是否开启自适应刷新。默认开启。
       + `innodb_adaptive_flushing_lwm`：百分比，当脏页数据达到这个百分比时，会强制启动自实现刷新。
   + <font color= "#CC5500">Buff Pool刷盘步骤：当Buffer Pool实例中的脏页百分比超过`innodb_max_dirty_pages_pct_lwm`触发脏页刷盘，每次从LRU列表尾部查看`innodb_lru_scan_depth`数量的页，如果是脏页就放入一个脏页列表等待刷盘，如果是干净的就直接丢弃，释放buffer pool的空间，让脏页百分比低于`innodb_max_dirty_pages_pct`。对于脏页列表的刷盘速率，如果没有开启自适应刷新，且脏页数量没有达到`innodb_adaptive_flushing_lwm`限制时，以固定速率刷盘，否则自适应刷新启动，会根据当前IO压力等因素来决定刷盘速率。</font>  
@@ -69,7 +69,7 @@
 
 + Change Buffer  
   + 对非唯一索引进行insert、update、delete操作时，如果对应的数据不在buffer pool中时，不会立即从磁盘中加载数据到buffer pool中，而是将对应页的操作记录保存在change buffer。之后如果对应的页被加载到buffer pool时会进行合并操作。如果对应页一直未被加载到buffer pool，change buffer的数据在MySQL服务空闲时或者MySQL进程关闭时进行合并操作。Change Buffer在内存中会占用Buffer Pool的空间，磁盘上则是保存在系统表上。
-  + 配置字段：
+  + 部分配置字段：
     + `innodb_change_buffering`：默认值`none`，不会缓存任何操作。  
       `none`:默认值，不会缓存任何操作。  
       `inserts`:缓存插入操作。  
@@ -81,14 +81,14 @@
   + <font color= "#CC5500">8.4版本Change Buffer默认是关闭的，我觉得最主要的原因是，目前SSD已经非常普遍，SSD对于顺序IO和随机IO性能差异不大，反而Change Buffer会挤压Buffer Pool的空间，维护Change Buffer也会带来一定的性能消耗，所以默认关闭。但如果实际应用中如果存在大量使用非唯一索引进行更新时，使用Change Buffer可能是个更优的选择。</font>
 
 + Adaptive Hash Index
-  + 配置字段：  
+  + 部分配置字段：  
     + `innodb_adaptive_hash_index`：是否开启，默认关闭。
     + `innodb_adaptive_hash_index_parts`：分成多少区，减少锁竞争，提升并发能力。
   + <font color= "#CC5500">只有使用非聚簇索引时，才会建立哈希项。如果某一页多次访问，被当成是热点数据，那么AHI会主动建立哈希项。对于同一个数据页的热点数据，多种访问路径会建立多个哈希项。AHI的应用会增加锁的消耗，并且当Buffer Pool中的数据页，被丢弃或者触发脏页回写时，为了维护AHI会增加额外的消耗。</font>
 
 + Doublewrite Buffer
   + 假设有一个脏页准备从Buffer Pool刷新到磁盘，首先会将脏页从Buffer Pool复制到Doublewrite Buffer，将Doublewrite Buffer中的数据刷盘后才会将Buffer Pool中的脏页刷盘。
-  + 配置字段： 
+  + 部分配置字段： 
     + `innodb_doublewrite`：是否开启Doublewrite Buffer。  
       `ON`：默认值开启  
       `OFF`：关闭  
@@ -99,12 +99,12 @@
     + `innodb_doublewrite_pages`:`Defines the maximum number of doublewrite pages per thread for a batch write.`每个线程批量写入的最大页数。默认值128。那么一次写入的大小为128*16K=2M。
   
 + undo log
-  + 配置字段：
+  + 部分配置字段：
     + `innodb_rollback_segments`：回滚段的数量，默认值为128。
   
 + redo log
   + <font color= "#CC5500">redo log使用了page cache。redo log记录的是对数据页所做的修改操作的物理日志信息，比如“第X页第Y字节由a改为b”的二进制信息。</font>
-  + 配置字段：
+  + 部分配置字段：
     + `innodb_redo_log_capacity`：所有redo log文件的磁盘空间大小。默认值为100M。如果该字段生效，redo log文件数量为32。
     + `innodb_log_files_in_group`：redo log文件数量。默认值为2。
     + `innodb_log_file_size`：单个redo log文件大小。默认值为48M。
@@ -116,14 +116,16 @@
 
 + binary log
   + <font color= "#CC5500">binary log使用了page cache。</font>
-  + 配置字段：
+  + 部分配置字段：
     + `binlog_cache_size`：binlog cache buffer的大小，如果超过数据会存在临时文件。
     + `sync_binlog`：控制binary log何时刷盘。0：不主动刷盘，由操作系统自己控制。1：每次将user buffer中数据写入page cache后，主动刷盘。N：N个事务后主动刷盘。
-  + binlog格式：
-    + STATEMENT：记录执行的SQL语句。
-    + ROW：记录每一行数据的变化。
-    + MIXED：默认使用STATEMENT，但在判断某条语句可能在statement-based复制下不安全时，会自动切换为ROW。
-
+    + `binlog_expire_logs_seconds`：binary log文件的过期时间。单位是秒。
+    + `binlog_expire_logs_auto_purge`：binary log文件过期后是否自动删除，默认打开，如果关闭不会主动删除，需要手动删。
+    + `binlog_format`：binary log格式。
+      + STATEMENT：记录执行的SQL语句。
+      + ROW：记录每一行数据的变化。
+      + MIXED：默认使用STATEMENT，但在判断某条语句可能在statement-based复制下不安全时，会自动切换为ROW。
+    
 + <font color= "#CC5500">二阶段提交事务：当事务提交时，首先在redo log buffer中写入一条“prepare”日志，然后将redo log buffer write()到操作系统 page cache。接着将事务的binlog数据写入page cache。最后写入一条“commit”日志到redo log buffer，并同样write()到page cache。这两个日志的page cache脏页的实际刷盘时机由各自的配置控制：redo log由innodb_flush_log_at_trx_commit控制，binlog由sync_binlog控制。</font>
 
 + relay log

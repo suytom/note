@@ -177,6 +177,8 @@ intset *intsetRemove(intset *is, int64_t value, int *success) {
 }
 ```
 
++<font color= "#CC5500">从上面可以看出intset每次在增加或者删除元素时，都会去调整内存，调用zrealloc。如果redis用glibc的ptmalloc的话，虽然有时候realloc很高效，不会有系统调用。但它还是有可能出现调用mmap或者brk的情况。但redis用的是jemalloc，对于这块之后看过jemalloc的源码再来记录。</font>
+
 ## listpack
 + lpNew:  
 ```c
