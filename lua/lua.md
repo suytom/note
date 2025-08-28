@@ -892,7 +892,7 @@ static void findloader (lua_State *L, const char *name) {
 
 + 因此lua脚本热更新只需要将对应的package.loaded["文件名"]=nil，然后再require("文件名")就可以了。但需要注意的是重新加载的文件中定义的变量的继承问题，这个是热更新的重点。  
   一个简单的例子：  
-  A.lua的代码如下：
+  老的A.lua的代码如下：
   ```lua 
     local ATest = {1,2,3}
     return ATest
@@ -900,8 +900,10 @@ static void findloader (lua_State *L, const char *name) {
   B.lua的代码如下所示：  
   ```lua 
     BTest = require("A")
-    BTest[0] = 4
-    BTest[1] = 5
-    BTest[2] = 6
   ```  
-  当A.lua重新require后，BTest的数据还是4、5、6。
+  新的A.lua的代码如下：
+  ```lua 
+    local ATest = {4,5,6}
+    return ATest
+  ```  
+  当新的A.lua重新require后，BTest的数据还是1，2，3。
