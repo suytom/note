@@ -184,19 +184,19 @@ intset *intsetRemove(intset *is, int64_t value, int *success) {
 ```c
 unsigned char *lpNew(size_t capacity) {
     //LP_HDR_SIZE = 6
-    //listpack头结构为6个字节
+    //listpack头结构为7个字节
     unsigned char *lp = lp_malloc(capacity > LP_HDR_SIZE+1 ? capacity : LP_HDR_SIZE+1);
     if (lp == NULL) return NULL;
     //前4个字节表示所占内存大小
     lpSetTotalBytes(lp,LP_HDR_SIZE+1);
     //第5、6个字节表示元素个数
     lpSetNumElements(lp,0);
-    //结束符
+    //最后一位结束符
     lp[LP_HDR_SIZE] = LP_EOF;
     return lp;
 }
 ```
-+ 增、删、查等代码比较简单就不做记录了，每个元素的数据结构是：编码+数据+长度（编码+数据的长度）。
++ 增、删、查等代码比较简单就不做记录了，每个元素的数据结构是：编码+数据+长度（该元素的总长度）。编码包含了该元素的数据类型、数据长度等信息。
 
 ## quicklist
 + quicklist相关结构体如下所示：  
@@ -208,7 +208,7 @@ typedef struct quicklistNode {
     size_t sz;                          //该节点的大小
     unsigned int count : 16;            //该节点的元素个数
     unsigned int encoding : 2;          //该节点是否压缩
-    unsigned int container : 2;         //该节点编码格式，原始数据或者listpack
+    unsigned int container : 2;         //该节点编码格式
     unsigned int recompress : 1;
     unsigned int attempted_compress : 1;
     unsigned int dont_compress : 1; 
@@ -374,9 +374,9 @@ int dictShrinkIfNeeded(dict *d) {
     return DICT_ERR;
 }
 ``` 
-+ rehash的推进规则：  
-  1、每次操作当前正在rehash的dict时，会推进一次rehash。  
-  2、在定时任务`databasesCron`中，会推进需要rehash的dict，每次最少100步。但每次推进rehash的时间不能超过1毫秒。伪代码如下所示：  
++ rehash的推进规则：
+  + 1、每次操作（增删改查）正在rehash的dict时，会主动推进hash。推进规则：如果新元素的hash idx大于rehashidx，并且该hash idx的原桶中有元素，那么直接将原桶中该hash idx中的所有元素rehash到新桶中，但此时rehashidx值不变。如果新元素的hash idx小于rehashidx或者原桶中没有元素，那么从rehashidx开始往前推进一次，rehashidx加1。正在rehash的dict，增加元素时只会往新桶中加。
+  + 2、 在定时任务`databasesCron`中，如果开启了主动推进rehash，会推进需要rehash的dict，每次最少100步。但每次推进rehash的时间不能超过1毫秒。伪代码如下所示：  
   ```c
   ...
   
@@ -399,7 +399,7 @@ int dictShrinkIfNeeded(dict *d) {
   ```  
 
 + 相关参数：
-  + `activerehashing`：默认开启，是否开启rehash。
+  + `activerehashing`：默认开启，是否主动推进rehash。
 
 ## zskiplist
 + zskiplist相关结构体如下所示： 
@@ -422,6 +422,14 @@ typedef struct zskiplist {
     //
     int level;
 } zskiplist;
+```
+
+## zset
+```c
+typedef struct zset {
+    dict *dict;
+    zskiplist *zsl;
+} zset;
 ```
 
 ## redisObject
@@ -566,7 +574,6 @@ static void listTypeTryConvertListpack(robj *o, robj **argv, int start, int end,
     }
 }
 ```  
-  `list_max_listpack_size`在上面有做记录。  
 
 + listTypeTryConvertQuicklist源码如下所示：  
 ```c
@@ -637,7 +644,26 @@ void setTypeMaybeConvert(robj *set, size_t size_hint) {
 ```
 
 ## Sorted Set
-+ Sorted Set类型的对象type=`OBJ_ZSET`，而encoding字段可能是`OBJ_ENCODING_LISTPACK`或者`OBJ_ENCODING_SKIPLIST`。  
++ Sorted Set类型的对象type=`OBJ_ZSET`，而encoding字段可能是`OBJ_ENCODING_LISTPACK`或者`OBJ_ENCODING_SKIPLIST`。
++ zsetTypeCreate源码如下所示： 
+```c 
+robj *zsetTypeCreate(size_t size_hint, size_t val_len_hint) {
+    //元素个数小于等于zset_max_listpack_entries
+    //并且单个元素长度小于等于zset_max_listpack_value字节
+    if (size_hint <= server.zset_max_listpack_entries &&
+        val_len_hint <= server.zset_max_listpack_value)
+    {
+        //listpack
+        return createZsetListpackObject();
+    }
+
+    //encoding字段是OBJ_ENCODING_SKIPLIST，但底层其实是zset
+    robj *zobj = createZsetObject();
+    zset *zs = zobj->ptr;
+    dictExpand(zs->dict, size_hint);
+    return zobj;
+}
+```
 
 ## Hash
 + Hash类型的对象type=`OBJ_HASH`，而encoding字段可能是`OBJ_ENCODING_HT`或者`OBJ_ENCODING_LISTPACK`。  
@@ -682,15 +708,15 @@ void hashTypeTryConversion(redisDb *db, robj *o, robj **argv, int start, int end
 ```
 
 # 全量同步和增量同步
-  从节点进程起来后在定时事件回调函数serverCron中调用replicationCron，如果有配置主节点信息，则调用connectWithMaster，主动连接主节点，此时这个连接的read回调函数是syncWithMaster。当主节点数据来了，在函数syncWithMaster中判断是全量同步还是增量同步，如果是增量同步，则将该socket的read回调函数设置为readQueryFromClient。如果是全量同步，回调函数设置为readSyncBulkPayload。当全量同步完成，回调函数又重新被设置为readQueryFromClient。
+  从节点进程起来后在定时事件回调函数`serverCron`中调用`replicationCron`，如果有配置主节点信息，则调用`connectWithMaster`，主动连接主节点，此时这个连接的read回调函数是`syncWithMaster`。当主节点数据来了，在函数`syncWithMaster`中判断是全量同步还是增量同步，如果是增量同步，则将该socket的read回调函数设置为`readQueryFromClient`。如果是全量同步，回调函数设置为`readSyncBulkPayload`。当全量同步完成，回调函数又重新被设置为`readQueryFromClient`。
 
 1、从节点（replica）在与主节点（master）建立复制连接时，会发送`PSYNC`命令，如果有之前的master的信息则会把之前master的`replication id`和`replication offset`带上。  
 2、主节点收到`PSYNC`命令后，比较`replication id`和`offset`，如果满足条件则进行增量同步，否则就需要全量同步。  
-3、如果是增量同步，主节点先发送一条`CONTINUE`命令，然后将`repl_backlog`中需要同步给从节点的数据保存在`client`的相关字段。然后在事主线程循环中调用handleClientsWithPendingWrites，真正的将对应数据发送给从节点。  
+3、如果是增量同步，主节点先发送一条`CONTINUE`命令，然后将`repl_backlog`中需要同步给从节点的数据保存在`client`的相关字段。然后在事主线程循环中调用`handleClientsWithPendingWrites`，真正的将对应数据发送给从节点。  
 4、如果是全量同步：
 + 首先检查是否已经有一个`CHILD_TYPE_RDB`子进程。BGSAVE子进程。
-  + 如果当前`rdb_child_type == RDB_CHILD_TYPE_DISK`，遍历所有client，查看是否有其他同样正在等待全量同步且满足相应条件的client，如果有则将client的状态改为SLAVE_STATE_WAIT_BGSAVE_END，后续在周期函数replicationCron()中处理。
-  + 如果当前`rdb_child_type == RDB_CHILD_TYPE_SOCKET`，直接返回，此时client的状态为SLAVE_STATE_WAIT_BGSAVE_START,后续在周期函数replicationCron()中处理。
+  + 如果当前`rdb_child_type == RDB_CHILD_TYPE_DISK`，遍历所有client，查看是否有其他同样正在等待全量同步且满足相应条件的client，如果有则将client的状态改为SLAVE_STATE_WAIT_BGSAVE_END，后续在周期函数`replicationCron`中处理。
+  + 如果当前`rdb_child_type == RDB_CHILD_TYPE_SOCKET`，直接返回，此时client的状态为SLAVE_STATE_WAIT_BGSAVE_START,后续在周期函数`replicationCron`中处理。
 + 如果当前没有相关子进程
   + 如果`repl_diskless_sync`和`repl_diskless_sync_delay`都设置，那么本次全量同步不会立即处理，而是等待`repl_diskless_sync_delay`，单位是秒。
   + 如果开启`repl_diskless_sync`，首先遍历所有从节点信息，找到需要全量同步的从节点，然后开启一个`CHILD_TYPE_RDB`子进程，子进程生成RDB数据，通过`pipe`发给父进程，结束后父进程将RDB数据发给所有需要全量同步的从节点。（`rdbSaveToSlavesSockets`函数）
@@ -710,7 +736,8 @@ void syncCommand(client *c)
         全量同步：
             if （此时有一个子进程，并且是在执行bgsave，将数据保存到磁盘）
             {
-                遍历所有client，查看是否有其他同样正在等待全量同步且满足相应条件的client，如果有则将client的状态改为SLAVE_STATE_WAIT_BGSAVE_END，后续在周期函数replicationCron()中处理
+                遍历所有client，查看是否有其他同样正在等待全量同步且满足相应条件的client，如果有则将client的状态改为SLAVE_STATE_WAIT_BGSAVE_END，后续在周期函数replicationCron()中处理,
+                之所以要遍历所有client，是因为RDB_CHILD_TYPE_DISK类型的子进程也可能由自身的bgsave触发。
             }
             else if （此时有一个直接将RDB数据通过socket发给client的子进程）
             {
@@ -795,7 +822,7 @@ void replicationCron(void)
     + `rdbchecksum`：检验RDB文件，默认开启
     + `dbfilename`：RDB文件名
     
-  + redis的rdb触发配置保存在redisServer的saveparams，存在默认参数，当redis.conf里没有配置save时，redis默认1分钟内10000修改或者5分钟内100次修改或者1小时内1次修改也会保存数据到磁盘（代码截图如下所示）。如果要关闭需要在配置文件中配置`save ""`，这样会清空saveparams。
+  + redis的rdb触发配置保存在`redisServer`的`saveparams`，存在默认参数，当redis.conf里没有配置save时，redis默认1分钟内10000修改或者5分钟内100次修改或者1小时内1次修改也会保存数据到磁盘（代码截图如下所示）。如果要关闭需要在配置文件中配置`save ""`，这样会清空saveparams。
   ![save_param](../redis/picture/save_param.jpeg)  
   + 在redis.conf里配置了`save ""`，也并不能避免任何时刻都能阻止生成RDB文件。`save ""`只是关闭了redis运行中自动触发的RDB持久化机制。当用SIGINT或者SIGTERM信号或者远端用`shutdown save`命令来关闭redis服务，redis进程退出时也会保存RDB数据到磁盘。  
   redis.conf里有两个默认关闭的配置`shutdown-on-sigint default`和`shutdown-on-sigterm default`，表示用SIGINT或者SIGTERM信号来关闭redis服务时是否保存RDB文件。  
@@ -820,6 +847,7 @@ void replicationCron(void)
     }
   }
   ```  
+  
 # 淘汰策略
 + 相关参数：
   + `maxmemory`：默认值为0，也就是默认关闭，不会主动淘汰

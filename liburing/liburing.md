@@ -1,6 +1,3 @@
-# 前言
-  现在需要实现一个录像服，需求是接收ds发过来的快照信息，并保存到磁盘。当客户端请求某局战斗时，将对应的快照数据文件发送给客户端。这里不写录像服的整体架构，只是讨论单台物理机上如何能实现最大的吞吐量。  
-
 # 块设备 I/O
   块设备，以Nvme SSD为例，该类型块设备拥有多个处理队列（之所以要支持多个处理队列是为了避免多个CPU竞争同一个处理队列造成的阻塞），系统初始化时，内核会在block layer为其处理队列创建对应的blk_mq_hw_ctx，每个blk_mq_hw_ctx会与某个CPU所绑定。内核会为该SSD创建一个专属的write back内核线程。对于block layer如何处理request会有多个因素影响，当块设备挂载了IO Scheduler（cat /sys/block/<device>/queue/scheduler）或者block layer层配置了开启合并request的配置（cat /sys/block/<device>/queue/nomerges）时，request不会立马尝试提交到blk_mq_hw_ctx。当上述两种情况都不存在时，block layer会立马尝试将request提交到blk_mq_hw_ctx，如果此时该blk_mq_hw_ctx已满，request会被保存到一个临时队列，在之后的某个时机再尝试提交到blk_mq_hw_ctx。  
   原文：“When the request arrives at the block layer, it will try the shortest path possible: send it directly to the hardware queue. However, there are two cases that it might not do that: if there’s an IO scheduler attached at the layer or if we want to try to merge requests. In both cases, requests will be sent to the software queue.”  
@@ -136,11 +133,11 @@ void write_io_uring(const char *filename, int writeSize) {
 
 + 测试结果：  
   ![test_result](../liburing/picture/test_result.jpeg)  
-  文件总大小为512M，<font color= "#FF0000">所有测试数据都排除了一些性能特别差数据，比如说使用O_DIRECT的情况下，每次以512KB的大小写入时，有时性能会特别差，比如800MB/s。当然Buffer IO和io_uring都会有，出现这种情况对于O_DIRECT和io_uring可能是因为SSD的缓存满了，直接刷新到NAND闪存的原因（之所以这么猜测是因为出现很慢的时候立马再次执行速度又恢复了），而对于Buffer IO也有可能是write触发了脏页刷盘。官网上给出的写入性能也只是以写入SSD缓存。</font>首先对比Buffer IO和No Buffer IO，普通Buffer IO写入速率随每次写入大小变化影响不大，这是因为测试中的Buffer IO都只是写入Page Cache（排除了write时触发了脏页刷盘的测试数据），最后由fsync触发脏页刷盘，而刷盘时数据都已经在page cache，所以这几种情况最终构建的request是一样的512KB，```bpftrace -e 'tracepoint:block:block_rq_issue {printf("PID: %d COMM: %s wrote %d bytes\n", pid, comm, args->bytes);}'```。对于O_DIRECT模式，每次调用write，都会调用block layer的接口构建request，所以越少的系统调用write，性能就会越好，对于一次写入1M、2M这种情况，一次系统调用会构建多个request。而对于io_uring，理论上应该是比O_DIRECT模式性能更优的，但上述例子中只是最简单的使用，没有加任何的优化特性，而且比O_DIRECT还有更多的系统调用，所以测试数据比O_DIRECT模式性能要差。  
+  文件总大小为512M，<font color= "#CC5500">所有测试数据都排除了一些性能特别差数据，比如说使用O_DIRECT的情况下，每次以512KB的大小写入时，有时性能会特别差，比如800MB/s。当然Buffer IO和io_uring都会有，出现这种情况对于O_DIRECT和io_uring可能是因为SSD的缓存满了，直接刷新到NAND闪存的原因（之所以这么猜测是因为出现很慢的时候立马再次执行速度又恢复了），而对于Buffer IO也有可能是write触发了脏页刷盘。官网上给出的写入性能也只是以写入SSD缓存。</font>首先对比Buffer IO和No Buffer IO，普通Buffer IO写入速率随每次写入大小变化影响不大，这是因为测试中的Buffer IO都只是写入Page Cache（排除了write时触发了脏页刷盘的测试数据），最后由fsync触发脏页刷盘，而刷盘时数据都已经在page cache，所以这几种情况最终构建的request是一样的512KB，```bpftrace -e 'tracepoint:block:block_rq_issue {printf("PID: %d COMM: %s wrote %d bytes\n", pid, comm, args->bytes);}'```。对于O_DIRECT模式，每次调用write，都会调用block layer的接口构建request，所以越少的系统调用write，性能就会越好，对于一次写入1M、2M这种情况，一次系统调用会构建多个request。而对于io_uring，理论上应该是比O_DIRECT模式性能更优的，但上述例子中只是最简单的使用，没有加任何的优化特性，而且比O_DIRECT还有更多的系统调用，所以测试数据比O_DIRECT模式性能要差。  
   
 + 结论：  
   在未挂载IO Scheduler的SSD上，理论上O_DIRECT具有更高的写入性能上限，因为它绕过了内核的page cache，避免了缓存一致性与额外拷贝的开销。但同时也要求user自己管理数据缓存和刷盘逻辑。如果user未实现缓存机制，仅以有多少数据就写多少的方式使用O_DIRECT，写入粒度较小或不连续，反而可能不如Buffer io。Buffer IO可能会合并相邻的页，使block layer能构建更少的request，从而减少IOPS消耗、提升写入效率。
-  <font color= "#FF0000">使用Nvem协议的SSD，推荐是不挂载IO Schedule，因为它支持多处理队列，而且SSD对于顺序读写和随机读写性能差异不大，挂载IO Schedule反而可能会降低读写能力。</font>
+  <font color= "#CC5500">使用Nvem协议的SSD，推荐是不挂载IO Schedule，因为它支持多处理队列，而且SSD对于顺序读写和随机读写性能差异不大，挂载IO Schedule反而可能会降低读写能力。</font>
 
 # io_uring_setup() flags
 + IORING_SETUP_IOPOLL  
@@ -180,17 +177,17 @@ void write_io_uring(const char *filename, int writeSize) {
   只能对提前通过io_uring_register_files()注册的文件描述符发起IO操作，禁止使用未注册的fd。
 
 + IORING_SETUP_NO_SQARRAY  
-  禁用SQ Array机制。io_uring初始化时，内核还是会申请CQ Ring的内存。<font color= "#FF0000">暂时想不到这个应用场景是什么，使用改参数初始化时，io_uring实例的CQ Ring都用不到，比如A进程使用IORING_SETUP_NO_SQARRAY初始化，并通过IORING_OP_MSG_RING将SQE投递给B进程的io_uring，当操作完成后，CQE被放入B进程的CQ Array，A进程是不感知的。如果为了多进程共享SQ Array，可以直接用IORING_SETUP_NO_MMAP。</font>
+  禁用SQ Array机制。io_uring初始化时，内核还是会申请CQ Ring的内存。<font color= "#CC5500">暂时想不到这个应用场景是什么，使用改参数初始化时，io_uring实例的CQ Ring都用不到，比如A进程使用IORING_SETUP_NO_SQARRAY初始化，并通过IORING_OP_MSG_RING将SQE投递给B进程的io_uring，当操作完成后，CQE被放入B进程的CQ Array，A进程是不感知的。如果为了多进程共享SQ Array，可以直接用IORING_SETUP_NO_MMAP。</font>
 
 + IORING_SETUP_HYBRID_IOPOLL  
   启用混合I/O轮询，默认情况下，SQE操作使用中断模式。需要使用polling模式的话，SQE提交时要使用IOSQE_IO_HARDPOLL。
 
 # io_uring register op
-+ IORING_REGISTER_BUFFERS、IORING_UNREGISTER_BUFFERS  
-  预先将用户态的buffer注册到内核，以提高数据IO性能、降低内存管理开销。
++ IORING_REGISTER_BUFFERS（IORING_REGISTER_BUFFERS2）、IORING_UNREGISTER_BUFFERS、IORING_REGISTER_BUFFERS_UPDATE  
+  预先将用户态的buffer注册到内核，以提高数据IO性能、降低内存管理开销。IORING_REGISTER_BUFFERS2可以分多组。<font color= "#CC5500">需要注意的是这个不是追加，是替换。如果要分多次register，得最开始分配一个较大的数组，并注册，之后再用IORING_REGISTER_BUFFERS_UPDATE更新。</font>
 
 + IORING_REGISTER_FILES、IORING_UNREGISTER_FILES  
-  将一组文件描述符预先注册到io_uring实例中，从而在后续提交IO操作时通过索引来引用这些文件，而不是直接使用原始的fd值。  
+  将一组文件描述符预先注册到io_uring实例中，从而在后续提交IO操作时通过索引来引用这些文件，而不是直接使用原始的fd值。<font color= "#CC5500">需要注意的是这个不是追加，是替换。如果要分多次register，得最开始分配一个较大的数组，并注册，之后再用IORING_REGISTER_FILES_UPDATE更新。</font>
   + 减少系统调用开销：  
   不使用时，每次提交SQE操作如IORING_OP_READ都要传递一个fd；  
   使用后，只需传一个files_index（索引），用户态到内核态的数据更少。  
@@ -211,7 +208,7 @@ void write_io_uring(const char *filename, int writeSize) {
   限制io_wq线程池中的最大线程数量。bounded和unbounded线程分别限制。可能会造成阻塞的操作会使用bounded worker线程，明确不会操作阻塞才会使用unbounded worker线程。如果bounded worker线程使用完了，后续的阻塞操作会等待空闲线程，而不是直接使用unbounded worker线程。
 
 + IORING_REGISTER_RING_FDS、IORING_UNREGISTER_RING_FDS  
-  注册其他进程的io_uring fd到当前io_uring实例中，以便进行诸如IORING_OP_MSG_RING这样的跨io_uring通信。
+  注册其他进程的io_uring fd到当前io_uring实例中，以便进行诸如IORING_OP_MSG_RING这样的跨io_uring通信。最新版本好像没用啊？
 
 + IORING_REGISTER_PBUF_RING、IORING_UNREGISTER_PBUF_RING  
   注册一个共享的环形buffer池，用于某些支持自动buffer分配的操作（如recv、accept）自动从中取buffer，提高性能。
@@ -227,13 +224,105 @@ void write_io_uring(const char *filename, int writeSize) {
 + IORING_REGISTER_USE_REGISTERED_RING
 
 # io_uring op
-+ IORING_OP_READV：从一个fd中读取数据，并填充用户提供的iovec数组（即多个缓冲区）。  
-  IORING_OP_WRITEV：将多个buffer（iovecs）中数据写入目标fd。  
-  IORING_OP_READ：从一个fd中读取数据。  
-  IORING_OP_WRITE：将一个用户态buffer中的数据写入一个fd。  
-  上述操作码，对于普通文件描述符，如果不使用O_DIRECT，
+```c
+enum io_uring_op {
+	IORING_OP_NOP,  
+	IORING_OP_READV,          从一个fd中读取数据，并填充用户提供的iovec数组（即多个缓冲区）。
+	IORING_OP_WRITEV,         将多个buffer（iovecs）中数据写入目标fd。
+	IORING_OP_FSYNC,
+	IORING_OP_READ_FIXED,     一种使用固定缓冲区的异步读操作，它跳过pin/unpin页面，提升性能。
+	IORING_OP_WRITE_FIXED,    一种使用固定缓冲区的异步写操作。
+	IORING_OP_POLL_ADD,
+	IORING_OP_POLL_REMOVE,
+	IORING_OP_SYNC_FILE_RANGE,
+	IORING_OP_SENDMSG,
+	IORING_OP_RECVMSG,
+	IORING_OP_TIMEOUT,
+	IORING_OP_TIMEOUT_REMOVE,
+	IORING_OP_ACCEPT,
+	IORING_OP_ASYNC_CANCEL,
+	IORING_OP_LINK_TIMEOUT,
+	IORING_OP_CONNECT,
+	IORING_OP_FALLOCATE,
+	IORING_OP_OPENAT,
+	IORING_OP_CLOSE,
+	IORING_OP_FILES_UPDATE,
+	IORING_OP_STATX,
+	IORING_OP_READ,
+	IORING_OP_WRITE,
+	IORING_OP_FADVISE,
+	IORING_OP_MADVISE,
+	IORING_OP_SEND,
+	IORING_OP_RECV,
+	IORING_OP_OPENAT2,
+	IORING_OP_EPOLL_CTL,
+	IORING_OP_SPLICE,
+	IORING_OP_PROVIDE_BUFFERS,
+	IORING_OP_REMOVE_BUFFERS,
+	IORING_OP_TEE,
+	IORING_OP_SHUTDOWN,
+	IORING_OP_RENAMEAT,
+	IORING_OP_UNLINKAT,
+	IORING_OP_MKDIRAT,
+	IORING_OP_SYMLINKAT,
+	IORING_OP_LINKAT,
+	IORING_OP_MSG_RING,
+	IORING_OP_FSETXATTR,
+	IORING_OP_SETXATTR,
+	IORING_OP_FGETXATTR,
+	IORING_OP_GETXATTR,
+	IORING_OP_SOCKET,
+	IORING_OP_URING_CMD,
+	IORING_OP_SEND_ZC,
+	IORING_OP_SENDMSG_ZC,
+	IORING_OP_READ_MULTISHOT,
+	IORING_OP_WAITID,
+	IORING_OP_FUTEX_WAIT,
+	IORING_OP_FUTEX_WAKE,
+	IORING_OP_FUTEX_WAITV,
+	IORING_OP_FIXED_FD_INSTALL,
+	IORING_OP_FTRUNCATE,
+	IORING_OP_BIND,
+	IORING_OP_LISTEN,
+	IORING_OP_LAST,
+};
+```  
 
-+ IORING_OP_READ_FIXED：一种使用固定缓冲区的异步读操作，它跳过pin/unpin页面，提升性能。  
-  IORING_OP_WRITE_FIXED:一种使用固定缓冲区的异步写操作。 
-  
+# sqe flag
+```c
+/* use fixed fileset */
+#define IOSQE_FIXED_FILE	(1U << IOSQE_FIXED_FILE_BIT)
+/* issue after inflight IO */
+#define IOSQE_IO_DRAIN		(1U << IOSQE_IO_DRAIN_BIT)
+/* links next sqe */
+#define IOSQE_IO_LINK		(1U << IOSQE_IO_LINK_BIT)
+/* like LINK, but stronger */
+#define IOSQE_IO_HARDLINK	(1U << IOSQE_IO_HARDLINK_BIT)
+/* always go async */
+#define IOSQE_ASYNC		(1U << IOSQE_ASYNC_BIT)
+/* select buffer from sqe->buf_group */
+#define IOSQE_BUFFER_SELECT	(1U << IOSQE_BUFFER_SELECT_BIT)
+/* don't post CQE if request succeeded */
+#define IOSQE_CQE_SKIP_SUCCESS	(1U << IOSQE_CQE_SKIP_SUCCESS_BIT)
+```
++ IOSQE_FIXED_FILE  
+  这个IO操作使用的是已经提前注册好的文件描述符。
+
++ IOSQE_IO_DRAIN  
+  只有在队列里所有已经提交的请求都完成之后，这个带IOSQE_IO_DRAIN的请求才会被执行。
+
++ IOSQE_IO_LINK  
+  当前请求和下一个请求形成一条链，下一个请求只有在当前请求完成后才会被执行。如果中间某个请求失败，后续的操作会被抛弃。
+
++ IOSQE_IO_HARDLINK  
+  同IOSQE_IO_LINK，但是中间某个请求失败，后续的操作不会被抛弃，继续执行。
+
++ IOSQE_ASYNC  
+  有些IO操作可能直接在SQPOLL线程里执行，这个flag可以避免IO操作直接在SQPOLL线程里执行。
+
++ IOSQE_BUFFER_SELECT  
+  指定group中选择合适的register buffer。
+
++ IOSQE_CQE_SKIP_SUCCESS  
+  成功的操作不会生成CQE，减少了CQE的数量，从而减少用户态轮询和处理CQE的开销。
   
