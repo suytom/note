@@ -798,6 +798,56 @@ void replicationCron(void)
 + `repl_diskless_load`：从节点收到主节点的全量同步包时，是否保存到磁盘。`disabled`（保存到磁盘）、`swapdb`（不保存到磁盘）、`on-empty-db`（当本地是空数据库时不保存到磁盘）
 
 # 持久化
++ 在serverCron中有如下代码：
+  ```c
+    if (hasActiveChildProcess() || ldbPendingChildren())
+    {
+        run_with_period(1000) receiveChildInfo();
+        checkChildrenDone();
+    //没有子进程
+    } else {
+        /* If there is not a background saving/rewrite in progress check if
+        * we have to save/rewrite now. */
+        //RDB持久化
+        for (j = 0; j < server.saveparamslen; j++) {
+            struct saveparam *sp = server.saveparams+j;
+
+            /* Save if we reached the given amount of changes,
+            * the given amount of seconds, and if the latest bgsave was
+            * successful or if, in case of an error, at least
+            * CONFIG_BGSAVE_RETRY_DELAY seconds already elapsed. */
+            if (server.dirty >= sp->changes &&
+                server.unixtime-server.lastsave > sp->seconds &&
+                (server.unixtime-server.lastbgsave_try >
+                CONFIG_BGSAVE_RETRY_DELAY ||
+                server.lastbgsave_status == C_OK))
+            {
+                serverLog(LL_NOTICE,"%d changes in %d seconds. Saving...",
+                    sp->changes, (int)sp->seconds);
+                rdbSaveInfo rsi, *rsiptr;
+                rsiptr = rdbPopulateSaveInfo(&rsi);
+                rdbSaveBackground(SLAVE_REQ_NONE,server.rdb_filename,rsiptr,RDBFLAGS_NONE);
+                break;
+            }
+        }
+
+        /* Trigger an AOF rewrite if needed. */
+        //aof持久化
+        if (server.aof_state == AOF_ON &&
+            !hasActiveChildProcess() &&
+            server.aof_rewrite_perc &&
+            server.aof_current_size > server.aof_rewrite_min_size)
+        {
+            long long base = server.aof_rewrite_base_size ?
+                server.aof_rewrite_base_size : 1;
+            long long growth = (server.aof_current_size*100/base) - 100;
+            if (growth >= server.aof_rewrite_perc && !aofRewriteLimited()) {
+                serverLog(LL_NOTICE,"Starting automatic rewriting of AOF on %lld%% growth",growth);
+                rewriteAppendOnlyFileBackground();
+            }
+        }
+    }
+  ```
 + 1、AOF
   + 常用相关参数：
     + `appendonly`：是否开启AOF
@@ -878,13 +928,19 @@ void replicationCron(void)
 # 集群模式
 + 故障转移具体步骤：  
   + 1、假设redis集群有三个主节点A、B、C，并且各自有三个从节点A1、A2、A3、B1、B2、B3、C1、C2、C3。
-  + 2、当A节点宕机时，B和C在定时任务`clusterCron`中，判断超时则会将各自本地记录的A节点状态设置为PFAIL（代码1）。
-  + 3、然后同样在定时任务`clusterCron`中，两个主节点可能会给对方发送PING消息（代码2）。
-  + 4、假设是B给C发，当C收到消息后发现B节点所记录的A节点也变成了PFAIL，那么此时C节点中所记录认为A节点主观下线的主节点个数已经满足故障转移的条件（2 >= (3 / 2) + 1），C节点会广播一条`CLUSTERMSG_TYPE_FAIL`类型的消息给所有节点（代码3）。
-  + 5、当A的从节点在`clusterCron`中，发现自己的主节点发生故障，则广播一条`CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST`类型的消息给所有节点（代码4）。
-  + 6、其他主节点收到`CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST`消息后，对其进行投票，如果投给某个从节点，就给该从节点发送`CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK`类型的消息（代码5）。
-  + 7、A的从节点收到`CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK`类型的消息后，增加自己集群对象`failover_auth_count`字段的值（代码6）。
-  + 8、当A的从节点在`clusterCron`中，如果投给本节点达到一定数量后，该节点切换成主节点（代码7）。
+  + 2、当A节点宕机时，B和C在定时任务`clusterCron`中，判断超时则会将各自本地记录的A节点状态设置为PFAIL。  
+      ![1](../redis/picture/1.jpeg)
+  + 3、然后同样在定时任务`clusterCron`中，两个主节点可能会给对方发送PING消息。  
+      ![2](../redis/picture/2.jpeg)
+  + 4、假设是B给C发，当C收到消息后发现B节点所记录的A节点也变成了PFAIL，那么此时C节点中所记录认为A节点主观下线的主节点个数已经满足故障转移的条件（2 >= (3 / 2) + 1），C节点会广播一条`CLUSTERMSG_TYPE_FAIL`类型的消息给所有节点。  
+      ![3](../redis/picture/3.jpeg)
+  + 5、其他节点收到`CLUSTERMSG_TYPE_FAIL`后，将节点状态设置为FAIL。  
+      ![4](../redis/picture/4.jpeg)
+  + 6、当A的从节点在`clusterCron`中，调用函数`clusterHandleSlaveFailover`发现自己的主节点发生故障，则广播一条`CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST`类型的消息给所有节点。  
+  + 7、其他主节点收到`CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST`消息后，对其进行投票，如果投给某个从节点，就给该从节点发送`CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK`类型的消息。  
+  + 8、A的从节点收到`CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK`类型的消息后，增加自己集群对象`failover_auth_count`字段的值。
+      ![6](../redis/picture/6.jpeg)
+  + 9、当A的从节点在`clusterCron`中，如果投给本节点达到一定数量后，该节点切换成主节点。  
 
 + 相关参数：
   + `cluster-enabled`：是否是集群模式。  
