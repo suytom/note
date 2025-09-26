@@ -97,12 +97,10 @@
     + `innodb_doublewrite_pages`:`Defines the maximum number of doublewrite pages per thread for a batch write.`每个线程批量写入的最大页数。默认值128。那么一次写入的大小为128*16K=2M。
   
 + undo log
-  + 
-  + 部分配置字段：
-    + `innodb_rollback_segments`：回滚段的数量，默认值为128。
+  + <font color= "#CC5500">使用操作系统的page cache，需要特别注意的是undo log的持久化也是靠redo log来实现的。</font>
   
 + redo log
-  + <font color= "#CC5500">默认不使用page cache，redo log记录的是对数据页所做的修改操作的物理日志信息，比如“第X页第Y字节由a改为b”的二进制信息，或者是“在change buffer里插入了一条XX记录”</font>
+  + <font color= "#CC5500">默认不使用page cache，redo log记录的是对数据页所做的修改操作的物理日志信息，比如“第X页第Y字节由a改为b”的二进制信息，或者是“在change buffer里插入了一条XX记录”。Buffer Pool中的脏页数据肯定是在对应事务的redo log刷盘后，才有可能被刷盘。不同事务的redo log数据是相互嵌套的，因此会出现A事务未提交的时候，由于提交B事务，导致A事务的部分redo log数据被刷盘。</font>
   + 部分配置字段：
     + `innodb_redo_log_capacity`：所有redo log文件的磁盘空间大小。默认值为100M。如果该字段生效，redo log文件数量为32。
     + `innodb_log_files_in_group`：redo log文件数量。默认值为2。
@@ -125,6 +123,10 @@
       + ROW：记录每一行数据的变化。
       + MIXED：默认使用STATEMENT，但在判断某条语句可能在statement-based复制下不安全时，会自动切换为ROW。
     
-+ <font color= "#CC5500">二阶段提交事务：当事务提交时，首先在redo log buffer中写入一条“prepare”日志，然后将redo log buffer write()到操作系统 page cache。接着将事务的binlog数据写入page cache。最后写入一条“commit”日志到redo log buffer，并同样write()到page cache。这两个日志的page cache脏页的实际刷盘时机由各自的配置控制：redo log由innodb_flush_log_at_trx_commit控制，binlog由sync_binlog控制。</font>
++ <font color= "#CC5500">二阶段提交事务：当事务提交时，首先在redo log buffer中写入一条“prepare”日志，然后调用write。接着将事务的binlog数据写入page cache。最后写入一条“commit”日志到redo log buffer，然后又调用write。这两个日志的page cache脏页的实际刷盘时机由各自的配置控制：redo log由innodb_flush_log_at_trx_commit控制，binlog由sync_binlog控制。</font>
 
-+ relay log
++ Deadlock in InnoDB
+  + 相关配置字段：
+    + `innodb_deadlock_detect`：是否开启死锁检测，默认开启。
+    + `innodb_lock_wait_timeout`：控制InnoDB事务等待锁被释放的最大时间，单位是秒。默认值是50秒。
+    + `innodb_print_all_deadlocks`：启用此选项后，InnoDB事务中的所有死锁信息都会记录在mysqld错误日志中。
