@@ -924,6 +924,7 @@ void replicationCron(void)
     }
   ```  
   + `replica-ignore-maxmemory`：从节点数据不做淘汰
+  + `lazyfree-lazy-eviction`：异步释放内存
 
 # 集群模式
 + 故障转移具体步骤：  

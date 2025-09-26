@@ -4,7 +4,7 @@
 
 + Innodb Limits
   + 一个表最多有1017个字段。
-  + 一个表最多有64的二级索引。
+  + 一个表最多有64个二级索引。
   + 一个联合索引最多包含16个字段。
   + 一行的数据最多不能超过页的一半，当有varchar类型的字段时，如果行的数据超过页的一半，该类型字段的数据会保存在溢出页上，在原行中保存溢出页的地址信息。BOLB、TEXT类型字段的数据，保存在溢出页（TINYBLOB、TINYTEXT除外）。行数据的总大小不能超过65535个字节（大BOLB、TEXT除外）。
 
@@ -23,11 +23,6 @@
     + `temptable_use_mmap`：temptable存储引擎专属配置字段，内存临时表超过`temptable_max_ram`的限制时，是否使用内存映射文件。默认是关闭。
     + `temptable_max_mmap`：temptable存储引擎专属配置字段，内存映射文件最大大小。
     + `max_heap_table_size`：当内存临时表的存储引擎为memory时，和`tmp_table_size`的最小值决定内存临时表的最大大小。
-
-//TODO https://dev.mysql.com/doc/refman/8.4/en/optimizing-innodb-diskio.html
-+ Optimizing InnoDB Disk I/O
-  + `innodb_flush_method`：
-  + `innodb_use_native_aio`：是否使用native aio异步IO，默认开启。<font color= "#CC5500">文档中如是说：“With native AIO, the type of I/O scheduler has greater influence on I/O performance. Generally, noop and deadline I/O schedulers are recommended.”推荐挂载noop或者deadline IO Scheduler，但对于使用Nvme协议的SSD来说，应该不挂载任何IO Scheduler。</font>
 
 + Innodb Buffer Pool  
   + 文档目录地址：https://dev.mysql.com/doc/refman/8.4/en/innodb-buffer-pool.html
@@ -53,6 +48,9 @@
 
 + Buffer Pool刷盘
   + 部分配置字段：
+    + `innodb_flush_method`：Unix默认是`O_DIRECT`，也就是不会使用操作系统的page cache，这个参数影响的是数据文件和redo log文件。
+    + `innodb_use_native_aio`：是否使用native aio异步IO，默认开启。<font color= "#CC5500">文档中如是说：“With native AIO, the type of I/O scheduler has greater influence on I/O performance. Generally, noop and deadline I/O schedulers are recommended.”推荐挂载noop或者deadline IO Scheduler，但对于使用Nvme协议的SSD来说，应该不挂载任何IO Scheduler。</font>
+    + `innodb_fsync_threshold`：在数据文件累积写入数据达到指定阈值时，才调用一次fsync()。默认值是0，当数据全写完后，才调用一次fsync()。
     + `innodb_page_cleaners`：脏页清理线程，默认值是Buffer Pool实例的个数。逻辑扫描和准备脏页，实际IO操作由write io thread处理。
     + `innodb_read_io_threads`：read io thread数量。
     + `innodb_write_io_threads`：write io thread数量。
@@ -68,7 +66,7 @@
     <font color= "#CC5500">对于块设备是Nvme SSD并且开启了AIO时，如果不能打满SSD的单个处理队列时，`innodb_read_io_threads`和`innodb_write_io_threads`开启多个线程毫无意义，反而可能会增加额外的线程切换消耗。</font>
 
 + Change Buffer  
-  + 对非唯一索引进行insert、update、delete操作时，如果对应的数据不在buffer pool中时，不会立即从磁盘中加载数据到buffer pool中，而是将对应页的操作记录保存在change buffer。之后如果对应的页被加载到buffer pool时会进行合并操作。如果对应页一直未被加载到buffer pool，change buffer的数据在MySQL服务空闲时或者MySQL进程关闭时进行合并操作。Change Buffer在内存中会占用Buffer Pool的空间，磁盘上则是保存在系统表上。
+  + <font color= "#CC5500">Change Buffer在内存中会占用Buffer Pool的空间，磁盘上则是保存在系统表上。系统表会使用操作系统的page cache。“The change buffer is a special data structure that caches changes to secondary index pages when those pages are not in the buffer pool.”，对非唯一二级索引数据页进行的修改且不在buffer pool中才会被缓存在change buffer。</font>
   + 部分配置字段：
     + `innodb_change_buffering`：默认值`none`，不会缓存任何操作。  
       `none`:默认值，不会缓存任何操作。  
@@ -78,7 +76,7 @@
       `purges`:缓存真正的删除操作。  
       `all`:缓存所有变更操作。
     + `innodb_change_buffer_max_size`：Change Buffer所占BUffer Pool最大百分比。默认值25，最大值50。
-  + <font color= "#CC5500">8.4版本Change Buffer默认是关闭的，我觉得最主要的原因是，目前SSD已经非常普遍，SSD对于顺序IO和随机IO性能差异不大，反而Change Buffer会挤压Buffer Pool的空间，维护Change Buffer也会带来一定的性能消耗，所以默认关闭。但如果实际应用中如果存在大量使用非唯一索引进行更新时，使用Change Buffer可能是个更优的选择。</font>
+  + <font color= "#CC5500">8.4版本Change Buffer默认是关闭的，我觉得最主要的原因是，目前SSD已经非常普遍，SSD对于顺序IO和随机IO性能差异不大，反而Change Buffer会挤压Buffer Pool的空间，维护Change Buffer也会带来一定的性能消耗，所以默认关闭。但实际应用中如果存在大量的对非唯一二级索引数据进行修改的情况下，使用Change Buffer可能是个更优的选择。</font>
 
 + Adaptive Hash Index
   + 部分配置字段：  
@@ -99,11 +97,12 @@
     + `innodb_doublewrite_pages`:`Defines the maximum number of doublewrite pages per thread for a batch write.`每个线程批量写入的最大页数。默认值128。那么一次写入的大小为128*16K=2M。
   
 + undo log
+  + 
   + 部分配置字段：
     + `innodb_rollback_segments`：回滚段的数量，默认值为128。
   
 + redo log
-  + <font color= "#CC5500">redo log使用了page cache。redo log记录的是对数据页所做的修改操作的物理日志信息，比如“第X页第Y字节由a改为b”的二进制信息。</font>
+  + <font color= "#CC5500">默认不使用page cache，redo log记录的是对数据页所做的修改操作的物理日志信息，比如“第X页第Y字节由a改为b”的二进制信息，或者是“在change buffer里插入了一条XX记录”</font>
   + 部分配置字段：
     + `innodb_redo_log_capacity`：所有redo log文件的磁盘空间大小。默认值为100M。如果该字段生效，redo log文件数量为32。
     + `innodb_log_files_in_group`：redo log文件数量。默认值为2。
