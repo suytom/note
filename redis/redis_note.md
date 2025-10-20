@@ -854,7 +854,7 @@ void replicationCron(void)
     + `appendfilename`：AOF文件名前缀
     + `appenddirname`：AOF文件保存目录
     + `appendfsync`：是否主动刷新到磁盘，`always`（每次变动都主动刷新）、`everysec`（每秒刷新到磁盘）、`no`（不主动刷新）
-    + `no-appendfsync-on-rewrite`：当在重写时，AOF变动不刷盘
+    + `no-appendfsync-on-rewrite`：当在重写时，AOF变动不刷盘。
     + `auto-aof-rewrite-percentage`：AOF触发重写相关，默认100%，较上次重写时大小变动百分比
     + `auto-aof-rewrite-min-size`：AOF触发重写的最小限制，默认64M，超过这个大小才有可能触发重写
     + `aof-load-truncated`：默认开启，如果Redis检测到AOF文件被截断或损坏，会尝试加载可用部分，并在日志中记录警告，但仍然正常启动。如果设置为no：如果 AOF 文件损坏，Redis直接拒绝启动，以避免数据不完整导致的异常。

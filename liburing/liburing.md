@@ -1,9 +1,10 @@
 # 块设备 I/O
-  块设备，以Nvme SSD为例，该类型块设备拥有多个处理队列（之所以要支持多个处理队列是为了避免多个CPU竞争同一个处理队列造成的阻塞），系统初始化时，内核会在block layer为其处理队列创建对应的blk_mq_hw_ctx，每个blk_mq_hw_ctx会与某个CPU所绑定。内核会为该SSD创建一个专属的write back内核线程。对于block layer如何处理request会有多个因素影响，当块设备挂载了IO Scheduler（cat /sys/block/<device>/queue/scheduler）或者block layer层配置了开启合并request的配置（cat /sys/block/<device>/queue/nomerges）时，request不会立马尝试提交到blk_mq_hw_ctx。当上述两种情况都不存在时，block layer会立马尝试将request提交到blk_mq_hw_ctx，如果此时该blk_mq_hw_ctx已满，request会被保存到一个临时队列，在之后的某个时机再尝试提交到blk_mq_hw_ctx。  
+  块设备，以Nvme SSD为例，该类型块设备拥有多个处理队列，系统初始化时，内核会在block layer为其处理队列创建对应的blk_mq_hw_ctx，每个blk_mq_hw_ctx会与某个CPU所绑定。对于block layer如何处理request会有多个因素影响，当块设备挂载了IO Scheduler（cat /sys/block/<device>/queue/scheduler）或者block layer层配置了开启合并request的配置（cat /sys/block/<device>/queue/nomerges）时，request不会立马尝试提交到blk_mq_hw_ctx。当上述两种情况都不存在时，block layer会立马尝试将request提交到blk_mq_hw_ctx，如果此时该blk_mq_hw_ctx已满，request会被保存到一个临时队列，在之后的某个时机再尝试提交到blk_mq_hw_ctx。  
   原文：“When the request arrives at the block layer, it will try the shortest path possible: send it directly to the hardware queue. However, there are two cases that it might not do that: if there’s an IO scheduler attached at the layer or if we want to try to merge requests. In both cases, requests will be sent to the software queue.”  
   block layer内核文档：https://www.kernel.org/doc/html/latest/block/blk-mq.html  
-  对于写文件，大多数时候write都是将user的内存数据memcpy到page cache就返回了，不会阻塞user thread，之后触发脏页刷盘的时候，由write back内核线程调用block layer的接口创建bio->构建request。之后的步骤则是上面所述。这里可能存在多个误阻塞的场景，第一，这个脏页不一定都是该user thread造成的，因为脏页刷盘的策略面向的是块设备，而不是文件。第二，假设现在有两个线程A、B，A线程write时触发了脏页刷盘，而page cache的脏页需要DMA page cache的数据到块设备后，由块设备驱动在回调中将脏页回收。那么在这一步骤前线程B的write操作也会被阻塞。  
-  对于读文件，如果缓存在page cache，则memecpy到user memory直接返回。如果cache miss，则调用block layer的接口创建request（此时还是在user thread）。之后的步骤则是上面所述。
+  对于写文件，大多数时候write都是将user的内存数据memcpy到page cache就返回了，不会阻塞user thread，之后触发脏页刷盘的时候，由write back内核线程调用block layer的接口创建bio->构建request。  
+  对于读文件，如果缓存在page cache，则memecpy到user memory直接返回。如果cache miss，则调用block layer的接口创建request（此时还是在user thread）。之后的步骤则是上面所述。  
+  linux会根据不同会话创建对应的cgroup，在这期间创建的进程都属于这个cgroup。如果cgroup开启了io控制器，一般是不会开，那么带宽、iops都受这个io控制器的限制。同时脏页刷盘比例也是由各个cgroup控制，但是刷盘时不一定只刷该cgroup的脏页。io请求放入kworker队列中后，kworker中的线程会依次从队列中取出io请求去执行。
 
 # Network I/O
   系统初始化时，NIC驱动会通过DMA机制为NIC分配一块主内存区域，并将其映射到设备上，使NIC能够直接读写主内存中的数据。  

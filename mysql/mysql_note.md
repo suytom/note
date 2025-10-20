@@ -3,10 +3,11 @@
   也就是说如果存储引擎是MyISAM或者MEMORY的话，表的数据行数会保存在表信息中（SHOW TABLE STATUS LIKE '表名';）。InnoDB因为支持事务的原因，则不会有这个信息。
 
 + Innodb Limits
+  + 文档目录地址：https://dev.mysql.com/doc/refman/8.4/en/innodb-limits.html
   + 一个表最多有1017个字段。
   + 一个表最多有64个二级索引。
   + 一个联合索引最多包含16个字段。
-  + 一行的数据最多不能超过页的一半，当有varchar类型的字段时，如果行的数据超过页的一半，该类型字段的数据会保存在溢出页上，在原行中保存溢出页的地址信息。BOLB、TEXT类型字段的数据，保存在溢出页（TINYBLOB、TINYTEXT除外）。行数据的总大小不能超过65535个字节（大BOLB、TEXT除外）。
+  + 一行的数据最多不能超过页的一半，在默认dynamic行格式下，当字段类型为varchar、BLOB、TEXT、MEDIUMBLOB、MEDIUMTEXT、LONGBLOB、LONGTEXT时，如果行的数据超过页的一半，选择一个或多个可变长度的列的数据会保存在溢出页上，在原行中保存溢出页的地址信息。当字段类型为TINYBLOB、TINYTEXT时，字段数据始终保存在数据页上。
 
 + 临时表
   + 文档目录地址：https://dev.mysql.com/doc/refman/8.4/en/internal-temporary-tables.html
@@ -38,7 +39,7 @@
 + Linear Read Ahead和Random Read Ahead  
   + 线性预读和随机预读，InnoDB默认只使用线性预读机制。
   + 部分配置字段：
-    + `innodb_read_ahead_threshold`：取值范围0-64，这个单位是MySQL页的单位（MySQL的页默认大小为16K），一个extent有64个页。当一个extent已经被加载到缓存中的页的数量达到限制时，会触发线性预读，加载下一整个extent到buff pool中。  
+    + `innodb_read_ahead_threshold`：取值范围0-64，这个单位是MySQL页的单位（MySQL的页默认大小为16K），一个extent有64个页。当一个extent顺序访问的页面数达到限制时，会触发线性预读，加载下一整个extent到buff pool中。  
     PS：linux虚拟内存管理的基本单位是页，一般大小为4K。文件管理系统的基本单位是块，通常块和页的大小相等。扇区是磁盘的基本单位，块对应多个扇区。虽然SSD在物理设备中不存在扇区的概念，但为了兼容传统设备接口，在逻辑层依然维护扇区的抽象。
     + `innodb_random_read_ahead`：是否开启随机预读，如果一个extent中的连续13个页都被加载到buff pool中，会触发随机预读，将这个extent的所有页都加载到buff pool中。默认是关闭的。
   + 全局变量：
@@ -48,8 +49,8 @@
 
 + Buffer Pool刷盘
   + 部分配置字段：
-    + `innodb_flush_method`：Unix默认是`O_DIRECT`，也就是不会使用操作系统的page cache，这个参数影响的是数据文件和redo log文件。
-    + `innodb_use_native_aio`：是否使用native aio异步IO，默认开启。<font color= "#CC5500">文档中如是说：“With native AIO, the type of I/O scheduler has greater influence on I/O performance. Generally, noop and deadline I/O schedulers are recommended.”推荐挂载noop或者deadline IO Scheduler，但对于使用Nvme协议的SSD来说，应该不挂载任何IO Scheduler。</font>
+    + `innodb_flush_method`：Unix默认是`O_DIRECT`，也就是不会使用操作系统的page cache，这个参数影响的是数据文件、redo log文件和doublewrite buffer文件是否使用操作系统的page cache。
+    + `innodb_use_native_aio`：是否使用native aio异步IO，默认开启。<font color= "#CC5500">“With native AIO, the type of I/O scheduler has greater influence on I/O performance. Generally, noop and deadline I/O schedulers are recommended.”推荐挂载noop或者deadline IO Scheduler，但对于使用Nvme协议的SSD来说，应该不挂载任何IO Scheduler。</font>
     + `innodb_fsync_threshold`：在数据文件累积写入数据达到指定阈值时，才调用一次fsync()。默认值是0，当数据全写完后，才调用一次fsync()。
     + `innodb_page_cleaners`：脏页清理线程，默认值是Buffer Pool实例的个数。逻辑扫描和准备脏页，实际IO操作由write io thread处理。
     + `innodb_read_io_threads`：read io thread数量。
@@ -63,7 +64,7 @@
       + `innodb_adaptive_flushing`：是否开启自适应刷新。默认开启。
       + `innodb_adaptive_flushing_lwm`：百分比，当脏页数据达到这个百分比时，会强制启动自实现刷新。
   + <font color= "#CC5500">Buff Pool刷盘步骤：当Buffer Pool实例中的脏页百分比超过`innodb_max_dirty_pages_pct_lwm`触发脏页刷盘，每次从LRU列表尾部查看`innodb_lru_scan_depth`数量的页，如果是脏页就放入一个脏页列表等待刷盘，如果是干净的就直接丢弃，释放buffer pool的空间，让脏页百分比低于`innodb_max_dirty_pages_pct`。对于脏页列表的刷盘速率，如果没有开启自适应刷新，且脏页数量没有达到`innodb_adaptive_flushing_lwm`限制时，以固定速率刷盘，否则自适应刷新启动，会根据当前IO压力等因素来决定刷盘速率。</font>  
-    <font color= "#CC5500">对于块设备是Nvme SSD并且开启了AIO时，如果不能打满SSD的单个处理队列时，`innodb_read_io_threads`和`innodb_write_io_threads`开启多个线程毫无意义，反而可能会增加额外的线程切换消耗。</font>
+    <font color= "#CC5500">对于块设备是Nvme SSD并且开启了AIO时，如果不能打满SSD的单个处理队列时，`innodb_read_io_threads`和`innodb_write_io_threads`开启多个线程毫无意义，反而可能会增加额外的消耗，比如线程切换，比如跨Node访问。</font>
 
 + Change Buffer  
   + <font color= "#CC5500">Change Buffer在内存中会占用Buffer Pool的空间，磁盘上则是保存在系统表上。系统表会使用操作系统的page cache。“The change buffer is a special data structure that caches changes to secondary index pages when those pages are not in the buffer pool.”，对非唯一二级索引数据页进行的修改且不在buffer pool中才会被缓存在change buffer。</font>
@@ -98,6 +99,7 @@
   
 + undo log
   + <font color= "#CC5500">使用操作系统的page cache，需要特别注意的是undo log的持久化也是靠redo log来实现的。</font>
+  + undo log数据保存在系统文件中，在内存中保存在回滚段中。
   
 + redo log
   + <font color= "#CC5500">默认不使用page cache，redo log记录的是对数据页所做的修改操作的物理日志信息，比如“第X页第Y字节由a改为b”的二进制信息，或者是“在change buffer里插入了一条XX记录”。Buffer Pool中的脏页数据肯定是在对应事务的redo log刷盘后，才有可能被刷盘。不同事务的redo log数据是相互嵌套的，因此会出现A事务未提交的时候，由于提交B事务，导致A事务的部分redo log数据被刷盘。</font>
