@@ -4,7 +4,7 @@
   block layer内核文档：https://www.kernel.org/doc/html/latest/block/blk-mq.html  
   对于写文件，大多数时候write都是将user的内存数据memcpy到page cache就返回了，不会阻塞user thread，之后触发脏页刷盘的时候，由write back内核线程调用block layer的接口创建bio->构建request。  
   对于读文件，如果缓存在page cache，则memecpy到user memory直接返回。如果cache miss，则调用block layer的接口创建request（此时还是在user thread）。之后的步骤则是上面所述。  
-  linux会根据不同会话创建对应的cgroup，在这期间创建的进程都属于这个cgroup。如果cgroup开启了io控制器，一般是不会开，那么带宽、iops都受这个io控制器的限制。同时脏页刷盘比例也是由各个cgroup控制，但是刷盘时不一定只刷该cgroup的脏页。io请求放入kworker队列中后，kworker中的线程会依次从队列中取出io请求去执行。
+  linux会根据不同会话创建对应的cgroup，在这期间创建的进程都属于这个cgroup。如果cgroup开启了io控制器，一般是不会开，那么带宽、iops都受这个io控制器的限制。同时脏页刷盘比例也是由各个cgroup控制，但是刷盘时不一定只刷该cgroup的脏页（可以开启per-cgroup，但也不一定保证只刷该cgroup的脏页）。
 
 # Network I/O
   系统初始化时，NIC驱动会通过DMA机制为NIC分配一块主内存区域，并将其映射到设备上，使NIC能够直接读写主内存中的数据。  
@@ -319,7 +319,11 @@ enum io_uring_op {
   同IOSQE_IO_LINK，但是中间某个请求失败，后续的操作不会被抛弃，继续执行。
 
 + IOSQE_ASYNC  
-  有些IO操作可能直接在SQPOLL线程里执行，这个flag可以避免IO操作直接在SQPOLL线程里执行。
+  有些IO操作可能直接在SQPOLL线程里执行，这个flag可以避免IO操作直接在SQPOLL线程里执行。  
+  1、普通write,使用page cache，user调用write大部分是将数据拷贝到page cache就返回，不阻塞user thread,page cache脏页刷盘时，write back内核线程调用block layer的接口创建并提交bio，当提交bio后就返回，不会再阻塞write back内核线程。  
+  2、普通write+O_DIRECT,在user thread调用block layer的接口创建提交bio，当DMA数据到块设备后，触发中断通知CPU，CPU唤醒挂起的线程，write才会返回，此时user thread才不阻塞。  
+  3、liburing+O_DIRECT，在io-wq线程中调用block layer的接口创建提交bio，当DMA数据到块设备后，触发中断通知CPU，CPU唤醒挂起的线程，在回调函数中创建CQ放入队列，write返回，此时io-wq线程才不阻塞。  
+  4、liburing+O_DIRECT+IOSQE_ASYNC,在io-wq线程中调用block layer的接口创建提交bio，提交bio后，io-wq thread就不再阻塞，当DMA数据到块设备后，触发中断通知CPU，CPU唤醒挂起的线程，在回调函数中创建CQ放入队列。
 
 + IOSQE_BUFFER_SELECT  
   指定group中选择合适的register buffer。

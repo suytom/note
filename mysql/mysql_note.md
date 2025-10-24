@@ -49,7 +49,7 @@
 
 + Buffer Pool刷盘
   + 部分配置字段：
-    + `innodb_flush_method`：Unix默认是`O_DIRECT`，也就是不会使用操作系统的page cache，这个参数影响的是数据文件、redo log文件和doublewrite buffer文件是否使用操作系统的page cache。
+    + `innodb_flush_method`：Unix默认是`O_DIRECT`，也就是不会使用操作系统的page cache，这个参数影响的是数据文件、redo log文件、undo log文件和doublewrite buffer文件是否使用操作系统的page cache。
     + `innodb_use_native_aio`：是否使用native aio异步IO，默认开启。<font color= "#CC5500">“With native AIO, the type of I/O scheduler has greater influence on I/O performance. Generally, noop and deadline I/O schedulers are recommended.”推荐挂载noop或者deadline IO Scheduler，但对于使用Nvme协议的SSD来说，应该不挂载任何IO Scheduler。</font>
     + `innodb_fsync_threshold`：在数据文件累积写入数据达到指定阈值时，才调用一次fsync()。默认值是0，当数据全写完后，才调用一次fsync()。
     + `innodb_page_cleaners`：脏页清理线程，默认值是Buffer Pool实例的个数。逻辑扫描和准备脏页，实际IO操作由write io thread处理。
@@ -98,11 +98,17 @@
     + `innodb_doublewrite_pages`:`Defines the maximum number of doublewrite pages per thread for a batch write.`每个线程批量写入的最大页数。默认值128。那么一次写入的大小为128*16K=2M。
   
 + undo log
-  + <font color= "#CC5500">使用操作系统的page cache，需要特别注意的是undo log的持久化也是靠redo log来实现的。</font>
-  + undo log数据保存在系统文件中，在内存中保存在回滚段中。
-  
+  + <font color= "#CC5500">需要特别注意的是undo log的持久化也是靠redo log来实现的。</font>
+  + undo log数据保存在系统文件中，在内存中保存在回滚段中。  
+  事务
+  │
+  └─> Undo Log Slot （管理结构）
+        │
+        ├─> Undo Log Segment 1 （实际 undo 数据）
+        └─> Undo Log Segment 2 （实际 undo 数据，写入量大时可能存在多个）
+
 + redo log
-  + <font color= "#CC5500">默认不使用page cache，redo log记录的是对数据页所做的修改操作的物理日志信息，比如“第X页第Y字节由a改为b”的二进制信息，或者是“在change buffer里插入了一条XX记录”。Buffer Pool中的脏页数据肯定是在对应事务的redo log刷盘后，才有可能被刷盘。不同事务的redo log数据是相互嵌套的，因此会出现A事务未提交的时候，由于提交B事务，导致A事务的部分redo log数据被刷盘。</font>
+  + <font color= "#CC5500">redo log记录的是对数据页所做的修改操作的物理日志信息，比如“第X页第Y字节由a改为b”的二进制信息，或者是“在doublewrite buffer里插入了一条XX记录”。Buffer Pool中的脏页数据肯定是在对应事务的redo log刷盘后，才有可能被刷盘。不同事务的redo log数据是相互嵌套的，因此会出现A事务未提交的时候，由于提交B事务，导致A事务的部分redo log数据被刷盘。</font>
   + 部分配置字段：
     + `innodb_redo_log_capacity`：所有redo log文件的磁盘空间大小。默认值为100M。如果该字段生效，redo log文件数量为32。
     + `innodb_log_files_in_group`：redo log文件数量。默认值为2。
@@ -126,6 +132,8 @@
       + MIXED：默认使用STATEMENT，但在判断某条语句可能在statement-based复制下不安全时，会自动切换为ROW。
     
 + <font color= "#CC5500">二阶段提交事务：当事务提交时，首先在redo log buffer中写入一条“prepare”日志，然后调用write。接着将事务的binlog数据写入page cache。最后写入一条“commit”日志到redo log buffer，然后又调用write。这两个日志的page cache脏页的实际刷盘时机由各自的配置控制：redo log由innodb_flush_log_at_trx_commit控制，binlog由sync_binlog控制。</font>
+
++ 对上面几个log和buffer pool以及是否受innodb_flush_method影响做个简单的总结：undo log在内存中属于buffer pool的一部分。redo log在内存中是额外申请的内存，不属于buffer pool。doublewrite buffer在内存中也是额外申请的内存，不属于buffer pool。binary log在内存中是额外申请的内存，不属于buffer pool。undo log、redo log、doublewrite buffer是否使用操作系统的page cache，受innodb_flush_method配置字段的影响。binary log不受该字段影响，它会使用操作系统的page cache。
 
 + Deadlock in InnoDB
   + 相关配置字段：
