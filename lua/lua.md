@@ -584,8 +584,7 @@ static void propagatemark (global_State *g) {
 }
 ```  
   **<font color= "#CC5500">luaC_barrierback和luaC_barrier，关于这两个网上解释一大堆，但没有我特别信服的文章。在这里写下此时的思考，之后如果发现理解不对再改。</font>**  
-  **<font color= "#CC5500">luaC_barrierback(L,父节点，子节点)如果父节点是黑色并且子节点是白色，则将父节点改为灰色，放入grayagain列表。luaC_barrier(L,父节点，子节点)，当GC步骤小于等于GCSenteratomic时，如果父节点是黑色并且子节点是白色，直接将子节点往前推。否则，将子节点设置为新的白色，等待下次GC。
-    按我的理解，这两种其实可以互相替换，或者只保留一个。这两种的主要分别是作用的对象类型上，table的赋值用luaC_barrierback，这是因为table赋值是经常性的操作，用luaC_barrierback放到grayagain列表，在之后一次性做标记。而upvalue的改变用luaC_barrier是因为upvalue的变动不是经常性的，这样能减少遍历的对象，提升性能。</font>**
+  **<font color= "#CC5500">luaC_barrierback(L,父节点，子节点)如果父节点是黑色并且子节点是白色，则将父节点改为灰色，放入grayagain列表。luaC_barrier(L,父节点，子节点)，当GC步骤小于等于GCSenteratomic时，如果父节点是黑色并且子节点是白色，直接将子节点往前推。否则，将父节点设置为新的白色，等待下次GC。按我的理解，这两种其实可以互相替换，或者只保留一个。这两种的主要分别是作用的对象类型上，table的赋值用luaC_barrierback，这是因为table赋值是经常性的操作，用luaC_barrierback放到grayagain列表，在之后一次性做标记。而upvalue的改变用luaC_barrier是因为upvalue的变动不是经常性的，这样能减少遍历的对象，提升性能。</font>**
 
 #### GCSenteratomic
   这个阶段是也是单步的，需要在这一步明确所有对象的颜色（此时如果main thread、register表等是白色则加入gray表），并且在最后将global_State的currentwhite设置为新白色。<font color= "#CC5500">这一步是GC能跟上新增元素的兜底机制，所以这一步有可能会比较重。</font>
@@ -844,6 +843,7 @@ closure(new_table)
 
 ### 3、两种GC模式实际应用的思考
 <font color= "#CC5500">当业务逻辑用lua来做开发时，当服务器执行一段时间后，可以将GC模式从增量式GC切换为分代式GC，这样能提升服务器性能。但是需要将那种一直会销毁变动的数据区分清楚，这种数据在缓存中时最好不要用lua对象来保存，比如玩家数据，玩家经常性的会有登陆登出操作，而且玩家数据也是常变动的，这会导致分代式GC会有较大可能触发major gc，major gc虽然复用了增量式GC的代码，分步执行，但它每步执行完不会重新设置debt，下次新增元素又会进gc，那么就有可能会导致CPU突刺，这种结果是与我们使用分代式GC的初衷相违背的。</font>
+
 ## D、热更
 + 跟热更相关的表：  
   + loaded表，l_registry表的key为LUA_LOADED_TABLE（_LOADED）。  

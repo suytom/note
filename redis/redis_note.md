@@ -451,6 +451,8 @@ struct redisObject {
   #define OBJ_SET 2       /* Set object. */  
   #define OBJ_ZSET 3      /* Sorted set object. */  
   #define OBJ_HASH 4      /* Hash object. */  
+  #define OBJ_MODULE 5    /* Module object. */  
+  #define OBJ_STREAM 6    /* Stream object. */
 
 + encoding字段的值：  
   #define OBJ_ENCODING_RAW 0            /* Raw representation */  
@@ -707,6 +709,25 @@ void hashTypeTryConversion(redisDb *db, robj *o, robj **argv, int start, int end
 }
 ```
 
+# Stream
++ Stream类型的对象type=`OBJ_STREAM`，而encoding字段是`OBJ_ENCODING_STREAM`。  
+```c
+typedef struct stream {
+    rax *rax;               /* The radix tree holding the stream. */
+    uint64_t length;        /* Current number of elements inside this stream. */
+    streamID last_id;       /* Zero if there are yet no items. */
+    streamID first_id;      /* The first non-tombstone entry, zero if empty. */
+    streamID max_deleted_entry_id;  /* The maximal ID that was deleted. */
+    uint64_t entries_added; /* All time count of elements added. */
+    rax *cgroups;           /* Consumer groups dictionary: name -> streamCG */
+} stream;
+```
++ 相关配置字段：
+  + `stream-node-max-entries`：默认值100，单个listpack元素个数。
+  + `stream-node-max-bytes`：默认值4096，单个listpack字节限制。
++ Stream底层是listpack + radix tree。
+
+
 # 全量同步和增量同步
   从节点进程起来后在定时事件回调函数`serverCron`中调用`replicationCron`，如果有配置主节点信息，则调用`connectWithMaster`，主动连接主节点，此时这个连接的read回调函数是`syncWithMaster`。当主节点数据来了，在函数`syncWithMaster`中判断是全量同步还是增量同步，如果是增量同步，则将该socket的read回调函数设置为`readQueryFromClient`。如果是全量同步，回调函数设置为`readSyncBulkPayload`。当全量同步完成，回调函数又重新被设置为`readQueryFromClient`。
 
@@ -946,3 +967,6 @@ void replicationCron(void)
 + 相关参数：
   + `cluster-enabled`：是否是集群模式。  
   + `cluster-node-timeout`：集群节点超时时间。  
+
+# Redis设计哲学
+redis在重写AOF、RDB持久化的时候会fork子进程来处理，并且还有一些可能会造成阻塞的操作交给其他线程处理，初始化时会创建三个线程分别做close file、flush aof、lazy free这三个操作，那么这避免不了的需要做线程间的同步，比较可能会发生线程切换的消耗。这应该保证不了这种实现方式就比在主线程来执行这三种操作的性能要好吧，但redis还是如此设计，我觉得应该是这三种操作造成阻塞的时间是不确定的，而线程同步和线程切换的消耗比这些可确定性更高，redis这么做是为了尽最大可能的保证主线程的并发能力。
