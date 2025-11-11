@@ -13,7 +13,7 @@
   ![fullresult](../miscellaneous/picture/fullresult.png)  
 
 # 内存序
-  本想对C++11几种内存序做些记录，但实际准备写的时候又觉得没必要，首先是不管开发还是实际线上运营都是在X86_64架构下，而且一般都是加锁。其次这块感觉也没什么难点需要特别记录的。<font color= "#CC5500">之所以明确表明X86_64架构，是因为X86_64是TSO（强一致性内存模型），这种CPU只有Store Buffer，没有Invalid Queue。也就是说这种内存模型只有store load这种情况会出现乱序，也就在这种情况下如果需要保证一致性才需要加内存屏障。</font>测试案例如下所示：  
+  <font color= "#CC5500">X86_64是TSO（强一致性内存模型），这种CPU只有Store Buffer，没有Invalid Queue。也就是说这种内存模型只有store load这种情况会出现乱序，也就在这种情况下如果需要保证一致性才需要加内存屏障。</font>测试案例如下所示：  
   volatile关键字，表明变量是易变的，CPU每次都从主存上拿数据。  
   没有内存屏障代码截图以及测试结果如下图所示：  
   ![nofence](../miscellaneous/picture/no_fence.png)  
