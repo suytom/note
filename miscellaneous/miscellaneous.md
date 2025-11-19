@@ -13,14 +13,52 @@
   ![fullresult](../miscellaneous/picture/fullresult.png)  
 
 # 内存序
-  <font color= "#CC5500">X86_64是TSO（强一致性内存模型），这种CPU只有Store Buffer，没有Invalid Queue。也就是说这种内存模型只有store load这种情况会出现乱序，也就在这种情况下如果需要保证一致性才需要加内存屏障。</font>测试案例如下所示：  
+  + X86_64是TSO（强一致性内存模型），这种内存模型只有store-load这种情况会出现乱序。也就在这种情况下如果需要保证一致性才需要加内存屏障。测试案例如下所示：  
   volatile关键字，表明变量是易变的，CPU每次都从主存上拿数据。  
   没有内存屏障代码截图以及测试结果如下图所示：  
   ![nofence](../miscellaneous/picture/no_fence.png)  
   ![nofenceresult](../miscellaneous/picture/no_fence_result.png)  
   有内存屏障代码截图以及测试结果如下图所示：  
   ![fence](../miscellaneous/picture/fence.png)  
-  ![fenceresult](../miscellaneous/picture/fence_result.png)  
+  ![fenceresult](../miscellaneous/picture/fence_result.png)
+  + <font color= "#CC5500">TSO内存模型也有invalid queue（这里之前有误解），load-load、store-store、load-store、store-load这四种情况，指令都不会乱序。load-store不会乱序的意思是，cpu的invalid queue中已经有cache line失效通知，只是还未处理，此时，cpu的缓存中的值还是旧值，但对于cpu来说只是还未处理失效通知，因此不算乱序，只是load到了旧值。而store-load会出现乱序是因为修改值后cache line失效通知保存在store buffer中，还未通过总线通知给其他cpu，load完成的时间可能早于store“被其他核看到”的时间，因此会乱序。</font>
+  + compare_exchange_weak、compare_exchange_strong
+    在强一致性内存模型下，这两者没有差别，因为强一致性内存模型下，CAS可以用单条指令，只有在非TSO内存模型的平台上表现才会有差异，在这种平台上，compare_exchange_weak可能会出现值一样，但是失败的情况，也就是“伪失败”，这是因为这种平台的CAS这个操作不是单一指令，compare_exchange_strong是通过重试的方式来保证不出现伪失败的情况。因此在非TSO内存模型下，这种方式性能会差点。伪代码如下：  
+    ```c++  
+    bool compare_exchange_strong(atomic<T>* obj, T& expected, T desired) {
+        T current = load_linked(obj);  // LL指令
+        
+        if (current != expected) {
+            expected = current;
+            return false;  // 真实失败
+        }
+        
+        // 关键：强版本在条件存储失败时会重试
+        while (!store_conditional(obj, desired)) {
+            // 重试前重新检查值是否仍然匹配
+            current = load_linked(obj);
+            if (current != expected) {
+                expected = current;
+                return false;  // 值在重试期间被修改了
+            }
+            // 否则是伪失败，继续重试
+        }
+        return true;
+    }
+
+    bool compare_exchange_weak(atomic<T>* obj, T& expected, T desired) {
+        T current = load_linked(obj);
+        
+        if (current != expected) {
+            expected = current;
+            return false;
+        }
+        
+        // 弱版本：条件存储失败就直接返回，不重试
+        return store_conditional(obj, desired);
+        // 可能因为伪失败而返回false，即使值匹配
+    }
+    ```  
 
 # virtual table  
   ```c++  

@@ -1,14 +1,14 @@
 # 1、atomic<T>（原子类型）
 std::atomic自定义类型的有可能不是lock-free的原因：
 1、对齐问题：为了获得最佳的性能，数据需要对齐到特定的地址。不是所有的数据类型都可以保证这种对齐。当一个原子对象跨越多个缓存行时，这可能导致额外的开销，因为CPU需要检查多个缓存行来获取完整的数据。
-2、大小问题：如果自定义类型的大小超过一个缓存行的大小，那么在执行原子操作时可能需要访问多个缓存行。这增加了操作的复杂性和开销。
+2、大小问题：如果自定义类型的大小超过一个缓存行的大小，那么在执行原子操作时可能需要访问多个缓存行。这增加了操作的复杂性和开销。但一般都不用超过cache line，超过机器字长都不是lock free的。
 3、实现复杂性：对于内置类型，编译器和标准库可以很容易地利用硬件指令来实现高效的原子操作。但对于复杂的自定义类型，实现高效的原子操作更为复杂。
 4、硬件限制：不同的处理器和硬件平台可能有不同的原子操作支持和限制。这可能导致为某些自定义类型实现lock-free原子操作的困难。
 
 # 2、spin lock(自旋锁)
 Linux中的spin_lock其实就是一个int类型的变量，使用CPU的原子指令实现自旋锁，不会挂起线程，一直循环等待。
 
-# 3、mutex（glibc版本为2.29）
+# 3、pthread_mutex（glibc版本为2.29）
 __pthread_mutex_s:  
   ```c
 struct __pthread_mutex_s
@@ -156,7 +156,44 @@ __pthread_mutex_unlock_usercnt (pthread_mutex_t *mutex, int decr)
   ![mutex_unlock](../linux_lock/picture/mutex_unlock.jpeg)  
   PTHREAD_MUTEX_TIMED_NP(默认类型)、PTHREAD_MUTEX_ADAPTIVE_NP在解锁的时候没有判断锁的持有线程是否为当前线程，所以需要注意加锁解锁相对应，也可以用PTHREAD_MUTEX_ERRORCHECK_NP，会做检查，只是性能稍差。
 
-# 4、条件变量
+# 4、pthread_rwlock
+```c 
+struct __pthread_rwlock_arch_t
+{
+  unsigned int __readers;
+  unsigned int __writers;
+  unsigned int __wrphase_futex;
+  unsigned int __writers_futex;
+  unsigned int __pad3;
+  unsigned int __pad4;
+#ifdef __x86_64__
+  int __cur_writer;
+  int __shared;
+  signed char __rwelision;
+# ifdef  __ILP32__
+  unsigned char __pad1[3];
+#  define __PTHREAD_RWLOCK_ELISION_EXTRA 0, { 0, 0, 0 }
+# else
+  unsigned char __pad1[7];
+#  define __PTHREAD_RWLOCK_ELISION_EXTRA 0, { 0, 0, 0, 0, 0, 0, 0 }
+# endif
+  unsigned long int __pad2;
+  /* FLAGS must stay at this position in the structure to maintain
+     binary compatibility.  */
+  unsigned int __flags;
+#else /* __x86_64__  */
+  /* FLAGS must stay at this position in the structure to maintain
+     binary compatibility.  */
+  unsigned char __flags;
+  unsigned char __shared;
+  signed char __rwelision;
+  unsigned char __pad2;
+  int __cur_writer;
+#endif
+};
+```  
+
+# 5、条件变量
 ```c 
 static __always_inline int
 __pthread_cond_wait_common (pthread_cond_t *cond, pthread_mutex_t *mutex,
@@ -183,7 +220,7 @@ __pthread_cond_wait_common (pthread_cond_t *cond, pthread_mutex_t *mutex,
 ```  
   <font color= "#CC5500">条件变量在futex被唤醒后，有一个自旋操作，因此条件变量不会由于futex的原因导致虚假唤醒。但消耗信号到重新获取互斥锁这两步不是原子性的，这里会导致存在虚假唤醒的情况。</font>
 
-# 5、信号量
+# 6、信号量
 new_sem:  
 ```c 
 struct new_sem
@@ -277,9 +314,77 @@ __new_sem_wait (sem_t *sem)
   ![sem_wait_slow](../linux_lock/picture/sem_wait_slow.jpeg)   
   通过源码的注释也能知道当futex被唤醒后，还会有CAS操作来避免内核的虚假唤醒。
 
-# 6、三者比较
+# 7、三者比较
 + 1、关于条件变量的虚假唤醒  
   首先需要说明的是三种底层唤醒机制都是用的futex，但只有条件变量存在虚假唤醒。这是有两个方面导致的，条件变量的实现以及内核的原因，解释如下：  
   实现方面：futex唤醒和mutex加锁之间的竞态，上面代码中有介绍pthread_cond_wait内部的行为大致为：1、释放mutex。2、调用futex(FUTEX_WAIT, …)进入休眠。3、被pthread_cond_signal或pthread_cond_broadcast唤醒。4、重新尝试获取 mutex。由于步骤3和4不是原子的，多个被唤醒的线程可能会竞争mutex，导致一些线程在真正获取mutex之前再次进入等待。  
   内核方面：futex_wait()可能会被虚假唤醒（例如：信号、调度、内核 Bug 等因素）。  
   而互斥锁、条件变量、信号量都不会因为Linux内核可能出现的spurious wakeup导致虚假唤醒，这是因为互斥锁、条件变量、信号量futex被唤醒后，还会通过原子操作检查监控的值是否满足条件。但条件变量自身的实现机制还是会出现虚假唤醒。
+
+# 8、C++11的std::mutex和std::shared_mutex
++ std::mutex伪代码
+```c
+    class __mutex_base
+    {
+        ...
+        pthread_mutex _M_mutex;
+        ...
+    };
+
+    class mutex : private __mutex_base
+    {
+        ...
+        void lock()
+        {
+            int __e = __gthread_mutex_lock(&_M_mutex);
+
+            // EINVAL, EAGAIN, EBUSY, EINVAL, EDEADLK(may)
+            if (__e)
+        __throw_system_error(__e);
+        }
+
+        void unlock()
+        {
+            // XXX EINVAL, EAGAIN, EPERM
+            __gthread_mutex_unlock(&_M_mutex);
+        }
+        ...
+    };
+```  
+  <font color= "#CC5500">std::mutex的底层用的pthread_mutex。</font>
+
++ std::shared_mutex伪代码
+```c
+    class __shared_mutex_pthread
+    {
+        ...
+        pthread_rwlock_t	_M_rwlock;
+        ...
+    };
+    
+    class __shared_mutex_cv
+    {
+        ...
+        mutex		_M_mut;
+        condition_variable	_M_gate1;
+        condition_variable	_M_gate2;
+        ...
+    };
+
+    class shared_mutex
+    {
+        ...
+        #if _GLIBCXX_USE_PTHREAD_RWLOCK_T
+            typedef void* native_handle_type;
+            native_handle_type native_handle() { return _M_impl.native_handle(); }
+
+        private:
+            __shared_mutex_pthread _M_impl;
+        #else
+        private:
+            __shared_mutex_cv _M_impl;
+        #endif
+        ...
+    };
+```  
+  <font color= "#CC5500">std::shared_mutex的底层用的pthread_rwlock或者条件变量。</font>
