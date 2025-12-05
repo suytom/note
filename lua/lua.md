@@ -847,9 +847,9 @@ closure(new_table)
 ## D、热更
 + 跟热更相关的表：  
   + loaded表，l_registry表的key为LUA_LOADED_TABLE（_LOADED）。  
-  + searchers表，l_registry表的key为searchers。  
+  + searchers表，l_registry表的key为searchers。
 
-+ require相关伪代码如下所示：  
++ require会调用lua_load加载lua脚本，lua_load执行完后会创建一个LClosure处于栈顶，然后执行，并把返回值保存在_LOADED表中，如果没有返回值，则LOADED[name] = true，相关伪代码如下所示：  
 ```c
 static int ll_require (lua_State *L) {
   //获取传入的文件名
@@ -867,11 +867,20 @@ static int ll_require (lua_State *L) {
   
   ...
 
-  //执行findloader生成的对象
+  //lua_load加载lua脚本会生成一个LClosure，此时处于栈顶，执行findloader生成的对象
   lua_call(L, 2, 1);  /* run loader to load module */
   
-  ...
-
+  //将LClosure返回值赋值给loaded表，如果返回值为空，则LOADED[name] = true
+  if (!lua_isnil(L, -1))  /* non-nil return? */
+    lua_setfield(L, 2, name);  /* LOADED[name] = returned value */
+  else
+    lua_pop(L, 1);  /* pop nil */
+  if (lua_getfield(L, 2, name) == LUA_TNIL) {   /* module set no value? */
+    lua_pushboolean(L, 1);  /* use true as result */
+    lua_copy(L, -1, -2);  /* replace loader result */
+    lua_setfield(L, 2, name);  /* LOADED[name] = true */
+  }
+  lua_rotate(L, -2, 1);  /* loader data <-> module result  */
   return 2;  /* return module result and loader data */
 }
 
