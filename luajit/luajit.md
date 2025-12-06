@@ -16,6 +16,8 @@
         hot()
     end
     ```
++ c代码实现的结果：  
+    ![c](../luajit/picture/c.jpeg)
 + 原生lua结果：  
     ![lua_out](../luajit/picture/lua_out.jpeg)
 + luajit结果：
@@ -24,7 +26,7 @@
   + 不开启jit:
     ![luajit_off_out](../luajit/picture/luajit_off_out.jpeg)
 + 结果分析：
-    如上所示，这个应用场景luajit开启jit时相较于lua性能提升了差不多10倍，不开启也有一两倍的提升。首先是两者的```instructions```差异，luajit不管开不开启jit，相较于原生lua都有显著的减少，这主要是两者虚拟机的实现差异，luajit是真正的基于寄存器的，而原生lua使用栈来模拟寄存器的，从汇编层面来看原生lua还是基于栈的，因此luajit会比原生lua的指令数要少。<font color= "#CC5500">然后是两者的```branch-misses```占比差异，luajit只占```branches```的0.1%，而原生lua占了0.68%，这里留个疑问，暂时没想到哪里会导致这个差异，原生lua的虚拟机入口在lvm.c的```luaV_execute```，虽然是switch-case，但如果条件连续且较多，在汇编层面来说实际上会生成一个跳表，而luajit的GG_State有个dispatch字段，这是个函数指针数组，luajit的虚拟机入口函数是```lj_vm_call_dispatch_f```，通过opcode偏移找到函数地址。按道理来说这两种是一样的，因此opcode分发不会导致这么大的差异。猜测可能就是底层各自对opcode的处理不同，luajit可能是比较少的cmp，导致的分支预测失败差异。</font>
+    以上结果全都未开启优化，如上所示，这个应用场景luajit开启jit时相较于lua性能提升了差不多20倍，不开启也有两三倍的提升。首先是两者的```instructions```差异，luajit不管开不开启jit，相较于原生lua都有显著的减少，这主要是两者虚拟机的实现差异，luajit是真正的基于寄存器的，而原生lua使用栈来模拟寄存器的，从汇编层面来看原生lua还是基于栈的，因此luajit会比原生lua的指令数要少。<font color= "#CC5500">然后是两者的```branch-misses```占比差异，luajit只占```branches```的0.1%，而原生lua占了0.68%，这里留个疑问，暂时没想到哪里会导致这个差异，原生lua的虚拟机入口在lvm.c的```luaV_execute```，虽然是switch-case，但如果条件连续且较多，在汇编层面来说实际上会生成一个跳表，而luajit的GG_State有个dispatch字段，这是个函数指针数组，luajit的虚拟机入口函数是```lj_vm_call_dispatch_f```，通过opcode偏移找到函数地址。按道理来说这两种是一样的，因此opcode分发不会导致这么大的差异。猜测可能就是底层各自对opcode的处理不同，luajit可能是比较少的cmp，导致的分支预测失败差异。</font>
 
 # 寄存器
 + rdi：函数调用时第一个参数
@@ -119,7 +121,7 @@
       ```c
       mov    %rcx,%rdx
       mov    %rbx,-0x8(%rdx)
-      mov    0x20(%rbp),%rbx      //Gcfunc其实地址向上移动32个字节，此时rbx是GCfunc的pc地址，pc指向的是Proto中间字节码的地址
+      mov    0x20(%rbp),%rbx      //GCfunc其实地址向上移动32个字节，此时rbx是GCfunc的pc地址，pc指向的是Proto中间字节码的地址
       mov    (%rbx),%ecx
       movzbl %cl,%ebp             //将rbx的低8位的值赋值给rbp，此时rbp的值就是opcode
       movzbl %ch,%ecx
@@ -133,8 +135,112 @@
     ![bc_unm](../luajit/picture/bc_unm.jpeg)  
 
   + jit优化：
-    所谓的jit优化就是当执行某些指令时，会记录次数，当达到阈值后，会将热点代码动态编译，编译成功后会将这些指令替换。在vm_x64.dasc中调用hotloop的指令就是会进行优化的指令，分别是ITERN、FORL、ITERL、LOOP。这个例子的opcode是FORL。  
-    ```lj_bc_forl```汇编代码：  
-    ![lj_bc_forl](../luajit/picture/lj_bc_forl.jpeg)  
-    上面已经说过了r14寄存器的值实际上就是GG_State的dispatch函数指针数组的地址，而```subw $0x2,-0x80(%r14,%rbp,1)```实际上修改的是```r14 - 0x80 + rbp```地址的值，通过查看GG_State结构体，可以看到```r14 - 0x80```实际上是GG_State的hotcount的地址。
-    
+    所谓的jit优化就是当执行某些指令时，会根据GCfunc的pc地址记录次数，当达到阈值后，会将热点代码动态编译，编译成功后会将这些指令替换。在vm_x64.dasc中调用```hotloop```的指令就是会进行优化的指令，分别是```ITERN```、```FORL```、```ITERL```、```LOOP```。这个例子的opcode是FORL。
+    + ```lj_BC_FORL```汇编指令如下所示：  
+      ```c
+      mov    %ebx,%ebp
+      shr    %ebp
+      and    $0x7e,%ebp                       //将中间字节码的地址转换成hotcount的下标，之所以要and 0x7e，只保留低两个字节的数据是因为hotcount数组的大小为128个字节
+      subw   $0x2,-0x80(%r14,%rbp,1)          //dispatch数组地址向下移动0x80得到的是hotcount数组的起始地址，为什么每次减2？
+      jb     0x5555555947a1 <lj_vm_hotloop>   
+      ```
+    + 之后的执行顺序是：```lj_vm_hotloop```-->```lj_trace_hot```-->```lj_trace_ins```-->```trace_state```，在```trace_state```函数中，在```LJ_TRACE_START```状态会初始化一些信息，并且会将dispatch函数数组中的一些opcode所对应的处理函数替换成```lj_vm_record```。也就是说在jit优化期间是不会推进业务逻辑的，记录循环中的中间字节码，知道循环结束。然后在```LJ_TRACE_ASM```状态实际生成优化代码，<font color= "#CC5500">并且在结束时会调用```trace_stop```，在这个函数中会针对最开始的opcode对Proto结构体里的中间字节码做处理，比如上述例子中进入循环的是```BC_FORL``` opcode会被替换成```BC_JFORI```。```trace_stop```的代码如下所示：</font>  
+      ```c
+      static void trace_stop(jit_State *J)
+      {
+        BCIns *pc = mref(J->cur.startpc, BCIns);
+        BCOp op = bc_op(J->cur.startins);
+        GCproto *pt = &gcref(J->cur.startpt)->pt;
+        TraceNo traceno = J->cur.traceno;
+        GCtrace *T = J->curfinal;
+
+        switch (op) {
+        case BC_FORL:
+        setbc_op(pc+bc_j(J->cur.startins), BC_JFORI);  /* Patch FORI, too. */
+        /* fallthrough */
+        case BC_LOOP:
+        case BC_ITERL:
+        case BC_FUNCF:
+        /* Patch bytecode of starting instruction in root trace. */
+        setbc_op(pc, (int)op+(int)BC_JLOOP-(int)BC_LOOP);
+        setbc_d(pc, traceno);
+        addroot:
+        /* Add to root trace chain in prototype. */
+        J->cur.nextroot = pt->trace;
+        pt->trace = (TraceNo1)traceno;
+        break;
+        case BC_ITERN:
+        case BC_RET:
+        case BC_RET0:
+        case BC_RET1:
+        *pc = BCINS_AD(BC_JLOOP, J->cur.snap[0].nslots, traceno);
+        goto addroot;
+        case BC_JMP:
+        /* Patch exit branch in parent to side trace entry. */
+        lj_assertJ(J->parent != 0 && J->cur.root != 0, "not a side trace");
+        lj_asm_patchexit(J, traceref(J, J->parent), J->exitno, J->cur.mcode);
+        /* Avoid compiling a side trace twice (stack resizing uses parent exit). */
+        {
+        SnapShot *snap = &traceref(J, J->parent)->snap[J->exitno];
+        snap->count = SNAPCOUNT_DONE;
+        if (J->cur.topslot > snap->topslot) snap->topslot = J->cur.topslot;
+        }
+        /* Add to side trace chain in root trace. */
+        {
+        GCtrace *root = traceref(J, J->cur.root);
+        root->nchild++;
+        J->cur.nextside = root->nextside;
+        root->nextside = (TraceNo1)traceno;
+        }
+        break;
+        case BC_CALLM:
+        case BC_CALL:
+        case BC_ITERC:
+        /* Trace stitching: patch link of previous trace. */
+        traceref(J, J->exitno)->link = traceno;
+        break;
+        default:
+        lj_assertJ(0, "bad stop bytecode %d", op);
+        break;
+        }
+
+        /* Commit new mcode only after all patching is done. */
+        lj_mcode_commit(J, J->cur.mcode);
+        J->postproc = LJ_POST_NONE;
+        trace_save(J, T);
+
+        lj_vmevent_send(J2G(J), TRACE,
+        setstrV(V, V->top++, lj_str_newlit(V, "stop"));
+        setintV(V->top++, traceno);
+        setfuncV(V, V->top++, J->fn);
+        );
+        }
+
+        /* Start a new root trace for down-recursion. */
+        static int trace_downrec(jit_State *J)
+        {
+        /* Restart recording at the return instruction. */
+        lj_assertJ(J->pt != NULL, "no active prototype");
+        lj_assertJ(bc_isret(bc_op(*J->pc)), "not at a return bytecode");
+        if (bc_op(*J->pc) == BC_RETM)
+        return 0;  /* NYI: down-recursion with RETM. */
+        J->parent = 0;
+        J->exitno = 0;
+        J->state = LJ_TRACE_RECORD;
+        trace_start(J);
+        return 1;
+      }
+      ```
+    + 之后会在```lj_BC_JFORI```中调用函数```lj_BC_JLOOP```，在这个函数中会根据当前traceNo在trace数组中偏移找到对应的动态优化生成的函数的起始地址。    
+      ```c
+      mov    -0xb38(%r14),%rcx    //GG_State中dispatch数组的起始地址向下挪0xb38得到的是jit_State的GCRef数组
+      mov    (%rcx,%rax,8),%rax   //rax记录的是当前的traceNo,根据traceNo在数组中偏移得到动态生成代码的起始地址
+      mov    0x58(%rax),%rax
+      mov    0x10(%rsp),%rbp
+      mov    %rdx,-0xe20(%r14)
+      mov    %rbp,-0xec0(%r14)
+      sub    $0x10,%rsp
+      mov    %r12,0x10(%rsp)
+      mov    %r13,0x8(%rsp)
+      jmp    *%rax                //跳转动态优化生成的函数起始地址
+      ```
