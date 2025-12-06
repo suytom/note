@@ -26,7 +26,7 @@
   + 不开启jit:
     ![luajit_off_out](../luajit/picture/luajit_off_out.jpeg)
 + 结果分析：
-    以上结果全都未开启优化，如上所示，这个应用场景luajit开启jit时相较于lua性能提升了差不多20倍，不开启也有两三倍的提升。首先是两者的```instructions```差异，luajit不管开不开启jit，相较于原生lua都有显著的减少，这主要是两者虚拟机的实现差异，luajit是真正的基于寄存器的，而原生lua使用栈来模拟寄存器的，从汇编层面来看原生lua还是基于栈的，因此luajit会比原生lua的指令数要少。<font color= "#CC5500">然后是两者的```branch-misses```占比差异，luajit只占```branches```的0.1%，而原生lua占了0.68%，这里留个疑问，暂时没想到哪里会导致这个差异，原生lua的虚拟机入口在lvm.c的```luaV_execute```，虽然是switch-case，但如果条件连续且较多，在汇编层面来说实际上会生成一个跳表，而luajit的GG_State有个dispatch字段，这是个函数指针数组，luajit的虚拟机入口函数是```lj_vm_call_dispatch_f```，通过opcode偏移找到函数地址。按道理来说这两种是一样的，因此opcode分发不会导致这么大的差异。猜测可能就是底层各自对opcode的处理不同，luajit可能是比较少的cmp，导致的分支预测失败差异。</font>
+    以上结果全都未开启优化，如上所示，这个应用场景luajit开启jit时相较于lua性能提升了差不多20倍，不开启也有两三倍的提升。首先是两者的```instructions```差异，luajit不管开不开启jit，相较于原生lua都有显著的减少，这主要是两者虚拟机的实现差异，luajit是真正的基于寄存器的，而原生lua使用栈来模拟寄存器的，从汇编层面来看原生lua还是基于栈的，因此luajit会比原生lua的指令数要少。<span style="color: #CC5500;">然后是两者的```branch-misses```占比差异，luajit只占```branches```的0.1%，而原生lua占了0.68%，这里留个疑问，暂时没想到哪里会导致这个差异，原生lua的虚拟机入口在lvm.c的```luaV_execute```，虽然是switch-case，但如果条件连续且较多，在汇编层面来说实际上会生成一个跳表，而luajit的GG_State有个dispatch字段，这是个函数指针数组，luajit的虚拟机入口函数是```lj_vm_call_dispatch_f```，通过opcode偏移找到函数地址。按道理来说这两种是一样的，因此opcode分发不会导致这么大的差异。猜测可能就是底层各自对opcode的处理不同，luajit可能是比较少的cmp，导致的分支预测失败差异。</span>
 
 # 寄存器
 + rdi：函数调用时第一个参数
@@ -128,7 +128,7 @@
       add    $0x4,%rbx            //将指令地址往后移动
       jmp    *(%r14,%rbp,8)       //跳转到r14 + rbp * 8的地址
       ```  
-    + <font color= "#CC5500">之后的指令不会再通过```lj_vm_call_dispatch_f```，而是在各个函数中用```jmp *(%r14,%rbp,8)```指令直接通过dispatch数组跳转，这跟lua是完全不一样的，lua是在```luaV_execute```中，switch opcode,处理完后pi++，然后接着执行switch。luajit这种方式就相当于一直在一个函数中，。随便找两个函数的汇编代码如下所示。</font>  
+    + <span style="color: #CC5500;">之后的指令不会再通过```lj_vm_call_dispatch_f```，而是在各个函数中用```jmp *(%r14,%rbp,8)```指令直接通过dispatch数组跳转，这跟lua是完全不一样的，lua是在```luaV_execute```中，switch opcode,处理完后pi++，然后接着执行switch。luajit这种方式就相当于一直在一个函数中，。随便找两个函数的汇编代码如下所示。</span>  
     ```lj_BC_MOV```汇编代码：  
     ![bc_mov](../luajit/picture/bc_mov.jpeg)  
     ```lj_BC_UNM```汇编代码：  
@@ -144,7 +144,7 @@
       subw   $0x2,-0x80(%r14,%rbp,1)          //dispatch数组地址向下移动0x80得到的是hotcount数组的起始地址，为什么每次减2？
       jb     0x5555555947a1 <lj_vm_hotloop>   
       ```
-    + 之后的执行顺序是：```lj_vm_hotloop```-->```lj_trace_hot```-->```lj_trace_ins```-->```trace_state```，在```trace_state```函数中，在```LJ_TRACE_START```状态会初始化一些信息，并且会将dispatch函数数组中的一些opcode所对应的处理函数替换成```lj_vm_record```。也就是说在jit优化期间是不会推进业务逻辑的，记录循环中的中间字节码，知道循环结束。然后在```LJ_TRACE_ASM```状态实际生成优化代码，<font color= "#CC5500">并且在结束时会调用```trace_stop```，在这个函数中会针对最开始的opcode对Proto结构体里的中间字节码做处理，比如上述例子中进入循环的是```BC_FORL``` opcode会被替换成```BC_JFORI```。```trace_stop```的代码如下所示：</font>  
+    + 之后的执行顺序是：```lj_vm_hotloop```-->```lj_trace_hot```-->```lj_trace_ins```-->```trace_state```，在```trace_state```函数中，在```LJ_TRACE_START```状态会初始化一些信息，并且会将dispatch函数数组中的一些opcode所对应的处理函数替换成```lj_vm_record```。也就是说在jit优化期间是不会推进业务逻辑的，记录循环中的中间字节码，知道循环结束。然后在```LJ_TRACE_ASM```状态实际生成优化代码，<span style="color: #CC5500;">并且在结束时会调用```trace_stop```，在这个函数中会针对最开始的opcode对Proto结构体里的中间字节码做处理，比如上述例子中进入循环的是```BC_FORL``` opcode会被替换成```BC_JFORI```。```trace_stop```的代码如下所示：</span>  
       ```c
       static void trace_stop(jit_State *J)
       {
